@@ -26,6 +26,9 @@ namespace ImageMove
         /// <summary> 移動先テキストボックス一覧 </summary>
         private readonly List<TextBox> destinationTextBoxes;
 
+        /// <summary> 移動先へ即時移動するボタン一覧 </summary>
+        private readonly List<Button> destinationMoveButtons;
+
         /// <summary> 画像ファイルパスのリスト </summary>
         private List<string> imagePaths = new List<string>();
 
@@ -54,6 +57,8 @@ namespace ImageMove
                 textBox10,
                 textBox11
             };
+
+            destinationMoveButtons = new List<Button>();
 
             InitializeUi();
             LoadSettingIfExists();
@@ -218,6 +223,14 @@ namespace ImageMove
         }
 
         /// <summary>
+        /// 移動先パス編集時にボタン活性を更新する
+        /// </summary>
+        private void DestinationTextBox_TextChanged(object sender, EventArgs e)
+        {
+            UpdateDestinationActionButtons();
+        }
+
+        /// <summary>
         /// フォーム終了時に設定を保存する
         /// </summary>
         private void Main_FormClosing(object sender, FormClosingEventArgs e)
@@ -236,6 +249,7 @@ namespace ImageMove
             KeyPreview = true;
             button2.Text = "画像読み込み / 再読み込み";
             pictureBox1.SizeMode = PictureBoxSizeMode.Zoom;
+            CreateDestinationMoveButtons();
 
             foreach (var textBox in EnumeratePathTextBoxes())
             {
@@ -243,8 +257,14 @@ namespace ImageMove
                 textBox.Leave += PathTextBox_Leave;
             }
 
+            foreach (var destinationTextBox in destinationTextBoxes)
+            {
+                destinationTextBox.TextChanged += DestinationTextBox_TextChanged;
+            }
+
             FormClosing += Main_FormClosing;
             ClearDisplayedImage("画像がありません。");
+            UpdateDestinationActionButtons();
         }
 
         /// <summary>
@@ -257,6 +277,51 @@ namespace ImageMove
             foreach (var destinationTextBox in destinationTextBoxes)
             {
                 yield return destinationTextBox;
+            }
+        }
+
+        /// <summary>
+        /// 各移動先テキスト欄の左に即時移動ボタンを作成する
+        /// </summary>
+        private void CreateDestinationMoveButtons()
+        {
+            const int moveButtonWidth = 110;
+            const int moveButtonSpacing = 12;
+
+            SuspendLayout();
+
+            try
+            {
+                for (int index = 0; index < destinationTextBoxes.Count; index++)
+                {
+                    TextBox destinationTextBox = destinationTextBoxes[index];
+                    int originalLeft = destinationTextBox.Left;
+                    int offset = moveButtonWidth + moveButtonSpacing;
+
+                    destinationTextBox.Left = originalLeft + offset;
+                    destinationTextBox.Width -= offset;
+
+                    var moveButton = new Button
+                    {
+                        Name = "destinationMoveButton" + index,
+                        Text = "移動",
+                        Size = new Size(moveButtonWidth, button6.Height),
+                        Location = new Point(originalLeft, destinationTextBox.Top - 4),
+                        Margin = new Padding(6),
+                        Tag = index,
+                        TabIndex = destinationTextBox.TabIndex,
+                        UseVisualStyleBackColor = true
+                    };
+
+                    moveButton.Click += DestinationMoveButton_Click;
+
+                    Controls.Add(moveButton);
+                    destinationMoveButtons.Add(moveButton);
+                }
+            }
+            finally
+            {
+                ResumeLayout(false);
             }
         }
         #endregion 初期化
@@ -441,6 +506,7 @@ namespace ImageMove
         {
             button3.Enabled = CanShowPreviousImage();
             button4.Enabled = CanShowNextImage();
+            UpdateDestinationActionButtons();
         }
 
         /// <summary>
@@ -608,6 +674,46 @@ namespace ImageMove
             return Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
         }
         #endregion フォルダ選択
+
+        #region 移動先アクションボタン
+        /// <summary>
+        /// 移動先アクションボタン押下
+        /// </summary>
+        private void DestinationMoveButton_Click(object sender, EventArgs e)
+        {
+            if (!(sender is Button moveButton) || moveButton.Tag == null)
+            {
+                return;
+            }
+
+            int destinationIndex = Convert.ToInt32(moveButton.Tag);
+            if (destinationIndex < 0 || destinationIndex >= destinationTextBoxes.Count)
+            {
+                return;
+            }
+
+            MoveCurrentImage(destinationTextBoxes[destinationIndex]);
+        }
+
+        /// <summary>
+        /// 移動先アクションボタンの活性状態を更新する
+        /// </summary>
+        private void UpdateDestinationActionButtons()
+        {
+            if (destinationMoveButtons.Count == 0)
+            {
+                return;
+            }
+
+            bool hasCurrentImage = HasCurrentImage();
+
+            for (int index = 0; index < destinationMoveButtons.Count; index++)
+            {
+                bool hasDestinationDirectory = TryGetExistingDirectory(destinationTextBoxes[index].Text, out _);
+                destinationMoveButtons[index].Enabled = hasCurrentImage && hasDestinationDirectory;
+            }
+        }
+        #endregion 移動先アクションボタン
 
         #region 設定保存・復元
         /// <summary>
