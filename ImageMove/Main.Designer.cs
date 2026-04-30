@@ -520,7 +520,6 @@
             this.Margin = new System.Windows.Forms.Padding(6);
             this.Name = "Main";
             this.Text = "ImageMove";
-            this.KeyUp += new System.Windows.Forms.KeyEventHandler(this.Form1_KeyDown);
             ((System.ComponentModel.ISupportInitialize)(this.pictureBox1)).EndInit();
             this.ResumeLayout(false);
             this.PerformLayout();

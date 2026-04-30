@@ -1,15 +1,11 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
 using System.Drawing;
-using System.Linq;
 using System.IO;
-using System.Text;
-using System.Threading.Tasks;
-using System.Windows.Forms;
+using System.Linq;
 using System.Reflection;
-using System.Configuration;
+using System.Text;
+using System.Windows.Forms;
 using System.Xml.Serialization;
 using log4net;
 
@@ -19,48 +15,22 @@ namespace ImageMove
     {
         #region フィールド
         /// <summary> ロガー </summary>
-        static readonly ILog logger = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
+        private static readonly ILog logger = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
+
+        /// <summary> サポートする画像拡張子 </summary>
+        private static readonly string[] SupportedImageExtensions = { ".jpg", ".jpeg", ".png", ".bmp", ".gif" };
+
+        /// <summary> 設定保存ファイル </summary>
+        private readonly string settingFileName = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "setting.xml");
+
+        /// <summary> 移動先テキストボックス一覧 </summary>
+        private readonly List<TextBox> destinationTextBoxes;
 
         /// <summary> 画像ファイルパスのリスト </summary>
-        private List<string> ImagePathList;
-        /// <summary> 取得した画像パスの最大値 </summary>
-        private int MaxGetPathCount;
-        /// <summary> 現在表示している画像のパス </summary>
-        private int NowPathCount = -1;
-        /// <summary> 表示画像 </summary>
-        private Image DisplayImage;
-        /// <summary> →キー </summary>
-        private const string KeysRight = "Right";
-        /// <summary> ←キー </summary>
-        private const string KeysLeft = "Left";
-        /// <summary> ↑キー </summary>
-        private const string KeysUp = "Up";
-        /// <summary> ↓キー </summary>
-        private const string KeysDown = "Down";
+        private List<string> imagePaths = new List<string>();
 
-        /// <summary> 0キー </summary>
-        private const string KeysNumPad0 = "NumPad0";
-        /// <summary> 1キー </summary>
-        private const string KeysNumPad1 = "NumPad1";
-        /// <summary> 2キー </summary>
-        private const string KeysNumPad2 = "NumPad2";
-        /// <summary> 3キー </summary>
-        private const string KeysNumPad3 = "NumPad3";
-        /// <summary> 4キー </summary>
-        private const string KeysNumPad4 = "NumPad4";
-        /// <summary> 5キー </summary>
-        private const string KeysNumPad5 = "NumPad5";
-        /// <summary> 6キー </summary>
-        private const string KeysNumPad6 = "NumPad6";
-        /// <summary> 7キー </summary>
-        private const string KeysNumPad7 = "NumPad7";
-        /// <summary> 8キー </summary>
-        private const string KeysNumPad8 = "NumPad8";
-        /// <summary> 9キー </summary>
-        private const string KeysNumPad9 = "NumPad9";
-        /// <summary> 設定保存ファイル </summary>
-        private readonly string SettingFileName = Directory.GetCurrentDirectory() + @"\setting.xml";
-
+        /// <summary> 現在表示している画像のインデックス </summary>
+        private int currentImageIndex = -1;
         #endregion フィールド
 
         #region コンストラクタ
@@ -70,33 +40,54 @@ namespace ImageMove
         public Main()
         {
             InitializeComponent();
-            this.KeyPreview = true;
-            if (File.Exists(SettingFileName))
+
+            destinationTextBoxes = new List<TextBox>
             {
-                LoadSetting();
-            }
+                textBox2,
+                textBox3,
+                textBox4,
+                textBox5,
+                textBox6,
+                textBox7,
+                textBox8,
+                textBox9,
+                textBox10,
+                textBox11
+            };
+
+            InitializeUi();
+            LoadSettingIfExists();
         }
         #endregion コンストラクタ
+
+        #region キー処理
+        /// <summary>
+        /// 矢印キーやテンキーをフォーム全体で処理する
+        /// </summary>
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (IsPathTextBoxFocused())
+            {
+                return base.ProcessCmdKey(ref msg, keyData);
+            }
+
+            if (TryHandleShortcut(keyData))
+            {
+                return true;
+            }
+
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+        #endregion キー処理
 
         #region イベント
         #region 参照ボタン押下 取得パス
         /// <summary>
         /// 参照ボタン押下
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
         private void button1_Click(object sender, EventArgs e)
         {
-            logger.Info("参照ボタン押下　開始");
-            try
-            {
-                GetDir(textBox1);
-            }
-            catch (Exception ex)
-            {
-                logger.Fatal("参照ボタン押下でエラーが発生しました。", ex);
-            }
-            logger.Info("参照ボタン押下　終了");
+            BrowseForFolder(textBox1);
         }
         #endregion 参照ボタン押下 取得パス
 
@@ -104,50 +95,9 @@ namespace ImageMove
         /// <summary>
         /// 画像ファイル取得ボタン押下
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
         private void button2_Click(object sender, EventArgs e)
         {
-            logger.Info("画像ファイル取得ボタン押下　開始");
-            try
-            {
-                this.Enabled = false;
-                NowPathCount = 0;
-                button3.Enabled = false;
-                var targetDirPath = textBox1.Text.ToString();
-                ImagePathList = new List<string>();
-                var getJpg = Directory.EnumerateFiles(targetDirPath, "*.jpg", SearchOption.AllDirectories).ToList();
-                var getPng = Directory.EnumerateFiles(targetDirPath, "*.png", SearchOption.AllDirectories).ToList();
-                if (getJpg.Count > 0)
-                {
-                    ImagePathList.AddRange(getJpg);
-                }
-                if (getPng.Count > 0)
-                {
-                    ImagePathList.AddRange(getPng);
-                }
-
-                if (ImagePathList.Count() > 0)
-                {
-                    MaxGetPathCount = ImagePathList.Count() - 1;
-                    ImageDisplay();
-                    if(MaxGetPathCount == 1)
-                    {
-                        button4.Enabled = false;
-                    }
-                    button5.Enabled = true;
-                }
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("エラーです。");
-                logger.Fatal("画像ファイル取得ボタン押下でエラーが発生しました。", ex);
-            }
-            finally
-            {
-                this.Enabled = true;
-            }
-            logger.Info("画像ファイル取得ボタン押下　終了");
+            ReloadImages();
         }
         #endregion 画像ファイル取得ボタン押下
 
@@ -155,176 +105,54 @@ namespace ImageMove
         /// <summary>
         /// 参照ボタン押下 移動パス
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
         private void button6_Click(object sender, EventArgs e)
         {
-            try
-            {
-                this.Enabled = false;
-                GetDir(textBox2);
-            }
-            catch (Exception ex)
-            {
-                logger.Fatal("参照ボタン押下でエラーが発生しました。", ex);
-            }
-            finally
-            {
-                this.Enabled = true;
-            }
+            BrowseForFolder(textBox2);
         }
 
         private void button7_Click(object sender, EventArgs e)
         {
-            try
-            {
-                this.Enabled = false;
-                GetDir(textBox3);
-            }
-            catch (Exception ex)
-            {
-                logger.Fatal("参照ボタン押下でエラーが発生しました。", ex);
-            }
-            finally
-            {
-                this.Enabled = true;
-            }
+            BrowseForFolder(textBox3);
         }
 
         private void button8_Click(object sender, EventArgs e)
         {
-            try
-            {
-                this.Enabled = false;
-                GetDir(textBox4);
-            }
-            catch (Exception ex)
-            {
-                logger.Fatal("参照ボタン押下でエラーが発生しました。", ex);
-            }
-            finally
-            {
-                this.Enabled = true;
-            }
+            BrowseForFolder(textBox4);
         }
 
         private void button9_Click(object sender, EventArgs e)
         {
-            try
-            {
-                this.Enabled = false;
-                GetDir(textBox5);
-            }
-            catch (Exception ex)
-            {
-                logger.Fatal("参照ボタン押下でエラーが発生しました。", ex);
-            }
-            finally
-            {
-                this.Enabled = true;
-            }
+            BrowseForFolder(textBox5);
         }
 
         private void button10_Click(object sender, EventArgs e)
         {
-            try
-            {
-                this.Enabled = false;
-                GetDir(textBox6);
-            }
-            catch (Exception ex)
-            {
-                logger.Fatal("参照ボタン押下でエラーが発生しました。", ex);
-            }
-            finally
-            {
-                this.Enabled = true;
-            }
+            BrowseForFolder(textBox6);
         }
 
         private void button11_Click(object sender, EventArgs e)
         {
-            try
-            {
-                this.Enabled = false;
-                GetDir(textBox7);
-            }
-            catch (Exception ex)
-            {
-                logger.Fatal("参照ボタン押下でエラーが発生しました。", ex);
-            }
-            finally
-            {
-                this.Enabled = true;
-            }
+            BrowseForFolder(textBox7);
         }
 
         private void button12_Click(object sender, EventArgs e)
         {
-            try
-            {
-                this.Enabled = false;
-                GetDir(textBox8);
-            }
-            catch (Exception ex)
-            {
-                logger.Fatal("参照ボタン押下でエラーが発生しました。", ex);
-            }
-            finally
-            {
-                this.Enabled = true;
-            }
+            BrowseForFolder(textBox8);
         }
 
         private void button13_Click(object sender, EventArgs e)
         {
-            try
-            {
-                this.Enabled = false;
-                GetDir(textBox9);
-            }
-            catch (Exception ex)
-            {
-                logger.Fatal("参照ボタン押下でエラーが発生しました。", ex);
-            }
-            finally
-            {
-                this.Enabled = true;
-            }
+            BrowseForFolder(textBox9);
         }
 
         private void button14_Click(object sender, EventArgs e)
         {
-            try
-            {
-                this.Enabled = false;
-                GetDir(textBox10);
-            }
-            catch (Exception ex)
-            {
-                logger.Fatal("参照ボタン押下でエラーが発生しました。", ex);
-            }
-            finally
-            {
-                this.Enabled = true;
-            }
+            BrowseForFolder(textBox10);
         }
 
         private void button15_Click(object sender, EventArgs e)
         {
-            try
-            {
-                this.Enabled = false;
-                GetDir(textBox11);
-            }
-            catch (Exception ex)
-            {
-                logger.Fatal("参照ボタン押下でエラーが発生しました。", ex);
-            }
-            finally
-            {
-                this.Enabled = true;
-            }
+            BrowseForFolder(textBox11);
         }
         #endregion 参照ボタン押下 移動パス
 
@@ -332,11 +160,9 @@ namespace ImageMove
         /// <summary>
         /// 前の画像ボタン押下
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
         private void button3_Click(object sender, EventArgs e)
         {
-            Imageback();
+            ShowPreviousImage();
         }
         #endregion 前の画像ボタン押下
 
@@ -344,23 +170,19 @@ namespace ImageMove
         /// <summary>
         /// 次の画像ボタン押下
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
         private void button4_Click(object sender, EventArgs e)
         {
-            ImageForward();
+            ShowNextImage();
         }
-        #endregion 次の画像ボタン押下 
+        #endregion 次の画像ボタン押下
 
         #region 画像の移動ボタン押下
         /// <summary>
-        ///  画像の移動ボタン押下
+        /// 画像の移動ボタン押下
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
         private void button5_Click(object sender, EventArgs e)
         {
-            MoveImage(textBox2);
+            MoveCurrentImage(textBox2);
         }
         #endregion 画像の移動ボタン押下
 
@@ -368,12 +190,9 @@ namespace ImageMove
         /// <summary>
         /// 終了ボタン押下
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
         private void button5_Click_1(object sender, EventArgs e)
         {
-            SaveSetting();
-            Environment.Exit(0);
+            Close();
         }
         #endregion 終了ボタン押下
 
@@ -381,345 +200,624 @@ namespace ImageMove
         /// <summary>
         /// フォーム上でキーボード押下された
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
         private void Form1_KeyDown(object sender, KeyEventArgs e)
         {
-            var keyData = e.KeyData.ToString();
-
-            switch (keyData)
+            if (TryHandleShortcut(e.KeyData))
             {
-                case KeysRight:
-                    if (button4.Enabled == true)
-                    {
-                        ImageForward();
-                    }
-                    break;
-                case KeysLeft:
-                    if (button3.Enabled == true)
-                    {
-                        Imageback();
-                    }
-                    break;
-                case KeysUp:
-                    if (button4.Enabled == true)
-                    {
-                        ImageRightTurn90();
-                    }
-                    break;
-                case KeysDown:
-
-                    if (button3.Enabled == true)
-                    {
-                        ImageLeftTurn90();
-                    }
-                    break;
-                case KeysNumPad0:
-                    MoveImage(textBox2);
-                    break;
-                case KeysNumPad1:
-                    MoveImage(textBox3);
-                    break;
-                case KeysNumPad2:
-                    MoveImage(textBox4);
-                    break;
-                case KeysNumPad3:
-                    MoveImage(textBox5);
-                    break;
-                case KeysNumPad4:
-                    MoveImage(textBox6);
-                    break;
-                case KeysNumPad5:
-                    MoveImage(textBox7);
-                    break;
-                case KeysNumPad6:
-                    MoveImage(textBox8);
-                    break;
-                case KeysNumPad7:
-                    MoveImage(textBox9);
-                    break;
-                case KeysNumPad8:
-                    MoveImage(textBox10);
-                    break;
-                case KeysNumPad9:
-                    MoveImage(textBox11);
-                    break;
-                default:
-                    break;
+                e.Handled = true;
             }
         }
         #endregion フォーム上でキーボード押下された
+
+        /// <summary>
+        /// パス編集終了時に設定を保存する
+        /// </summary>
+        private void PathTextBox_Leave(object sender, EventArgs e)
+        {
+            SaveSettingSafe();
+        }
+
+        /// <summary>
+        /// フォーム終了時に設定を保存する
+        /// </summary>
+        private void Main_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            SaveSettingSafe();
+        }
         #endregion イベント
 
         #region メソッド
-        #region 画像表示
+        #region 初期化
         /// <summary>
-        /// 画像表示
+        /// UI初期化
         /// </summary>
-        private void ImageDisplay()
+        private void InitializeUi()
         {
-            using (FileStream fs = new FileStream(ImagePathList[NowPathCount], FileMode.Open))
-            {
-                var abyData = new byte[fs.Length];
-                fs.Read(abyData, 0, (int)fs.Length);
+            KeyPreview = true;
+            button2.Text = "画像読み込み / 再読み込み";
+            pictureBox1.SizeMode = PictureBoxSizeMode.Zoom;
 
-                using(MemoryStream ms = new MemoryStream(abyData))
+            foreach (var textBox in EnumeratePathTextBoxes())
+            {
+                textBox.ReadOnly = false;
+                textBox.Leave += PathTextBox_Leave;
+            }
+
+            FormClosing += Main_FormClosing;
+            ClearDisplayedImage("画像がありません。");
+        }
+
+        /// <summary>
+        /// パス入力欄を列挙する
+        /// </summary>
+        private IEnumerable<TextBox> EnumeratePathTextBoxes()
+        {
+            yield return textBox1;
+
+            foreach (var destinationTextBox in destinationTextBoxes)
+            {
+                yield return destinationTextBox;
+            }
+        }
+        #endregion 初期化
+
+        #region 画像読み込み
+        /// <summary>
+        /// 画像を読み込みまたは再読み込みする
+        /// </summary>
+        private void ReloadImages()
+        {
+            logger.Info("画像読み込み / 再読み込み 開始");
+
+            try
+            {
+                if (!TryGetExistingDirectory(textBox1.Text, out string sourceDirectory))
                 {
-                    var m_bmp = new Bitmap(ms);
-                    DisplayImage = (Image)m_bmp;
+                    MessageBox.Show("読み込みフォルダを指定してください。");
+                    return;
+                }
+
+                string previousImagePath = GetCurrentImagePath();
+                int previousIndex = currentImageIndex;
+
+                imagePaths = CollectImagePaths(sourceDirectory);
+                currentImageIndex = ResolveReloadIndex(previousImagePath, previousIndex);
+
+                if (!HasCurrentImage())
+                {
+                    ClearDisplayedImage("画像がありません。");
+                    return;
+                }
+
+                DisplayCurrentImage();
+                SaveSettingSafe();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("画像の読み込みに失敗しました。");
+                logger.Fatal("画像読み込み / 再読み込みでエラーが発生しました。", ex);
+            }
+            finally
+            {
+                logger.Info("画像読み込み / 再読み込み 終了");
+            }
+        }
+
+        /// <summary>
+        /// 読み込み対象の画像パスを収集する
+        /// </summary>
+        private List<string> CollectImagePaths(string sourceDirectory)
+        {
+            return Directory
+                .EnumerateFiles(sourceDirectory, "*.*", SearchOption.AllDirectories)
+                .Where(path => SupportedImageExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase))
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        /// <summary>
+        /// 再読み込み後の表示位置を決定する
+        /// </summary>
+        private int ResolveReloadIndex(string previousImagePath, int previousIndex)
+        {
+            if (imagePaths.Count == 0)
+            {
+                return -1;
+            }
+
+            if (!string.IsNullOrWhiteSpace(previousImagePath))
+            {
+                int existingIndex = imagePaths.FindIndex(
+                    path => string.Equals(path, previousImagePath, StringComparison.OrdinalIgnoreCase));
+
+                if (existingIndex >= 0)
+                {
+                    return existingIndex;
                 }
             }
-            pictureBox1.Image = DisplayImage;
-            pictureBox1.SizeMode = PictureBoxSizeMode.Zoom;
-            label1.Text = Path.GetFileName(ImagePathList[NowPathCount]);
-            label12.Text = (MaxGetPathCount + 1).ToString() + "枚中" + (NowPathCount + 1).ToString() + "枚目";
+
+            if (previousIndex < 0)
+            {
+                return 0;
+            }
+
+            if (previousIndex >= imagePaths.Count)
+            {
+                return imagePaths.Count - 1;
+            }
+
+            return previousIndex;
+        }
+        #endregion 画像読み込み
+
+        #region 画像表示
+        /// <summary>
+        /// 現在位置の画像を表示する
+        /// </summary>
+        private void DisplayCurrentImage()
+        {
+            if (!HasCurrentImage())
+            {
+                ClearDisplayedImage("画像がありません。");
+                return;
+            }
+
+            string imagePath = imagePaths[currentImageIndex];
+
+            try
+            {
+                using (var fileStream = new FileStream(imagePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                using (var sourceImage = Image.FromStream(fileStream))
+                {
+                    ReplaceDisplayedImage(new Bitmap(sourceImage));
+                }
+
+                label1.Text = Path.GetFileName(imagePath);
+                label12.Text = string.Format("{0}枚中{1}枚目", imagePaths.Count, currentImageIndex + 1);
+                UpdateNavigationButtons();
+            }
+            catch (Exception ex)
+            {
+                logger.Fatal(string.Format("画像表示でエラーが発生しました。 Path={0}", imagePath), ex);
+                MessageBox.Show("画像の表示に失敗しました。");
+            }
+        }
+
+        /// <summary>
+        /// 現在の表示画像を入れ替える
+        /// </summary>
+        private void ReplaceDisplayedImage(Image nextImage)
+        {
+            Image previousImage = pictureBox1.Image;
+            pictureBox1.Image = nextImage;
+            previousImage?.Dispose();
+        }
+
+        /// <summary>
+        /// 画像表示をクリアする
+        /// </summary>
+        private void ClearDisplayedImage(string statusText)
+        {
+            ReplaceDisplayedImage(null);
+            label1.Text = string.Empty;
+            label12.Text = statusText;
+            UpdateNavigationButtons();
         }
         #endregion 画像表示
 
-        #region 次へ
+        #region ナビゲーション
         /// <summary>
-        /// 次へ
+        /// 次の画像へ進む
         /// </summary>
-        private void ImageForward()
+        private void ShowNextImage()
         {
-            try
+            if (!CanShowNextImage())
             {
-                if (NowPathCount == -1)
-                {
-                    return;
-                }
-
-                NowPathCount++;
-                if (NowPathCount == 0)
-                {
-                    button3.Enabled = true;
-                }
-                ImageDisplay();
-
-                if (NowPathCount == MaxGetPathCount)
-                {
-                    button4.Enabled = false;
-                    button3.Enabled = true;
-                }
-                else if (MaxGetPathCount > NowPathCount)
-                {
-                    button3.Enabled = true;
-                }
-                else
-                {
-                    button4.Enabled = true;
-                }
-            }
-            catch (Exception ex)
-            {
-                logger.Fatal(string.Format("{0}でエラーが発生しました。", "次の画像ボタン押下"), ex);
+                return;
             }
 
+            currentImageIndex++;
+            DisplayCurrentImage();
         }
-        #endregion 次へ
 
-        #region 前へ
         /// <summary>
-        /// 前へ
+        /// 前の画像へ戻る
         /// </summary>
-        private void Imageback()
+        private void ShowPreviousImage()
         {
-            try
+            if (!CanShowPreviousImage())
             {
-                if (NowPathCount == -1)
-                {
-                    return;
-                }
-
-                NowPathCount--;
-                ImageDisplay();
-
-                if (NowPathCount == 0)
-                {
-                    button3.Enabled = false;
-                    button4.Enabled = true;
-                }
-                else if (MaxGetPathCount > NowPathCount)
-                {
-                    button4.Enabled = true;
-                }
-                else
-                {
-                    button3.Enabled = true;
-                }
+                return;
             }
-            catch (Exception ex)
-            {
-                logger.Fatal(string.Format("{0}でエラーが発生しました。", "前の画像ボタン押下"), ex);
-            }
+
+            currentImageIndex--;
+            DisplayCurrentImage();
         }
-        #endregion 前へ
 
-        #region 右へ90度回転
+        /// <summary>
+        /// ボタンの活性状態を更新する
+        /// </summary>
+        private void UpdateNavigationButtons()
+        {
+            button3.Enabled = CanShowPreviousImage();
+            button4.Enabled = CanShowNextImage();
+        }
+
+        /// <summary>
+        /// 前の画像へ戻れるか
+        /// </summary>
+        private bool CanShowPreviousImage()
+        {
+            return imagePaths.Count > 0 && currentImageIndex > 0;
+        }
+
+        /// <summary>
+        /// 次の画像へ進めるか
+        /// </summary>
+        private bool CanShowNextImage()
+        {
+            return imagePaths.Count > 0 && currentImageIndex >= 0 && currentImageIndex < imagePaths.Count - 1;
+        }
+        #endregion ナビゲーション
+
+        #region 画像回転
         /// <summary>
         /// 右へ90度回転
         /// </summary>
         private void ImageRightTurn90()
         {
-            try
-            {
-                pictureBox1.Image.RotateFlip(RotateFlipType.Rotate90FlipNone);
-                pictureBox1.Refresh();
-            }
-            catch (Exception ex)
-            {
-                logger.Fatal(string.Format("{0}でエラーが発生しました。", "↑ボタン押下"), ex);
-            }
+            RotateCurrentImage(RotateFlipType.Rotate90FlipNone);
         }
-        #endregion 右へ90度回転
 
-        #region 左へ90度回転
         /// <summary>
-        /// 前へ
+        /// 左へ90度回転
         /// </summary>
         private void ImageLeftTurn90()
         {
+            RotateCurrentImage(RotateFlipType.Rotate270FlipNone);
+        }
+
+        /// <summary>
+        /// 現在の表示画像を回転する
+        /// </summary>
+        private void RotateCurrentImage(RotateFlipType rotateFlipType)
+        {
             try
             {
-                pictureBox1.Image.RotateFlip(RotateFlipType.Rotate270FlipNone);
+                if (pictureBox1.Image == null)
+                {
+                    return;
+                }
+
+                pictureBox1.Image.RotateFlip(rotateFlipType);
                 pictureBox1.Refresh();
             }
             catch (Exception ex)
             {
-                logger.Fatal(string.Format("{0}でエラーが発生しました。", "↓ボタン押下"), ex);
+                logger.Fatal("画像回転でエラーが発生しました。", ex);
             }
         }
-        #endregion 左へ90度回転
+        #endregion 画像回転
 
         #region 画像移動
-        private void MoveImage(TextBox MovePath)
+        /// <summary>
+        /// 現在の画像を指定先へ移動する
+        /// </summary>
+        private void MoveCurrentImage(TextBox destinationTextBox)
         {
             try
             {
-                if (string.IsNullOrEmpty(MovePath.Text))
+                if (!HasCurrentImage())
                 {
-                    MessageBox.Show("移動先フォルダを選択してください。");
+                    MessageBox.Show("移動する画像がありません。");
                     return;
                 }
 
-                var moveTargetPath = MovePath.Text;
-                moveTargetPath = moveTargetPath + @"\" + Path.GetFileName(ImagePathList[NowPathCount]);
-
-                File.Move(ImagePathList[NowPathCount], moveTargetPath);
-
-                var removePath = ImagePathList[NowPathCount];
-
-                ImageForward();
-
-                ImagePathList.Remove(removePath);
-
-                MaxGetPathCount--;
-                NowPathCount--;
-                if(NowPathCount == 0)
+                if (!TryGetExistingDirectory(destinationTextBox.Text, out string destinationDirectory))
                 {
-                    button3.Enabled = false;
+                    MessageBox.Show("移動先フォルダを指定してください。");
+                    return;
                 }
 
-                if(MaxGetPathCount == 0)
+                string sourcePath = imagePaths[currentImageIndex];
+                string sourceDirectory = Path.GetDirectoryName(sourcePath) ?? string.Empty;
+
+                if (string.Equals(sourceDirectory, destinationDirectory, StringComparison.OrdinalIgnoreCase))
                 {
-                    button3.Enabled = false;
-                    button4.Enabled = false;
-                    button5.Enabled = false;
+                    MessageBox.Show("同じフォルダには移動できません。");
+                    return;
                 }
+
+                string destinationPath = Path.Combine(destinationDirectory, Path.GetFileName(sourcePath));
+
+                if (File.Exists(destinationPath))
+                {
+                    MessageBox.Show("移動先に同名ファイルが存在します。");
+                    return;
+                }
+
+                File.Move(sourcePath, destinationPath);
+                imagePaths.RemoveAt(currentImageIndex);
+
+                if (currentImageIndex >= imagePaths.Count)
+                {
+                    currentImageIndex = imagePaths.Count - 1;
+                }
+
+                if (HasCurrentImage())
+                {
+                    DisplayCurrentImage();
+                }
+                else
+                {
+                    ClearDisplayedImage("画像がありません。");
+                }
+
+                SaveSettingSafe();
             }
             catch (Exception ex)
             {
-                logger.Fatal(string.Format("{0}でエラーが発生しました。", ""), ex);
-            }
-            finally
-            {
-
+                logger.Fatal("画像移動でエラーが発生しました。", ex);
+                MessageBox.Show("画像の移動に失敗しました。");
             }
         }
         #endregion 画像移動
 
-        #region フォルダ選択ダイアログ表示＆フォルダ選択
+        #region フォルダ選択
         /// <summary>
-        /// フォルダ選択ダイアログ表示＆フォルダ選択
+        /// Explorer 風のフォルダ選択ダイアログを表示する
         /// </summary>
-        /// <param name="targetTexbox">表示対象のテキストボックス</param>
-        private void GetDir(TextBox targetTexbox)
+        private void BrowseForFolder(TextBox targetTextBox)
         {
-            using (FolderBrowserDialog fbd = new FolderBrowserDialog())
+            try
             {
-                //上部に表示する説明テキストを指定する
-                fbd.Description = "フォルダを指定してください。";
-                //ルートフォルダを指定する
-                //デフォルトでDesktop
-                fbd.RootFolder = Environment.SpecialFolder.Desktop;
-                //最初に選択するフォルダを指定する
-                //RootFolder以下にあるフォルダである必要がある
-                fbd.SelectedPath = @"C:\Windows";
-                //ユーザーが新しいフォルダを作成できるようにする
-                //デフォルトでTrue
-                fbd.ShowNewFolderButton = true;
-
-                //ダイアログを表示する
-                if (fbd.ShowDialog(this) == DialogResult.OK)
+                using (var dialog = new FolderPickerDialog())
                 {
-                    //選択されたフォルダを表示する
-                    targetTexbox.Text = fbd.SelectedPath;
+                    dialog.Title = "フォルダを指定してください。";
+                    dialog.InitialFolder = ResolveInitialDirectory(targetTextBox);
+
+                    if (dialog.ShowDialog(Handle))
+                    {
+                        targetTextBox.Text = dialog.SelectedPath;
+                        SaveSettingSafe();
+                    }
                 }
             }
+            catch (Exception ex)
+            {
+                logger.Fatal("フォルダ選択でエラーが発生しました。", ex);
+                MessageBox.Show("フォルダの選択に失敗しました。");
+            }
         }
-        #endregion フォルダ選択ダイアログ表示＆フォルダ選択
 
-        #region 移動先保存
+        /// <summary>
+        /// ダイアログの初期表示フォルダを決定する
+        /// </summary>
+        private string ResolveInitialDirectory(TextBox targetTextBox)
+        {
+            if (TryGetExistingDirectory(targetTextBox.Text, out string currentPath))
+            {
+                return currentPath;
+            }
+
+            if (!ReferenceEquals(targetTextBox, textBox1) && TryGetExistingDirectory(textBox1.Text, out string sourcePath))
+            {
+                return sourcePath;
+            }
+
+            return Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+        }
+        #endregion フォルダ選択
+
+        #region 設定保存・復元
+        /// <summary>
+        /// 設定を安全に保存する
+        /// </summary>
+        private void SaveSettingSafe()
+        {
+            try
+            {
+                SaveSetting();
+            }
+            catch (Exception ex)
+            {
+                logger.Error("設定保存に失敗しました。", ex);
+            }
+        }
+
+        /// <summary>
+        /// 設定が存在すれば読み込む
+        /// </summary>
+        private void LoadSettingIfExists()
+        {
+            if (!File.Exists(settingFileName))
+            {
+                return;
+            }
+
+            try
+            {
+                LoadSetting();
+            }
+            catch (Exception ex)
+            {
+                logger.Error("設定読み込みに失敗しました。", ex);
+            }
+        }
+
         /// <summary>
         /// 移動先保存
         /// </summary>
         private void SaveSetting()
         {
-            var obj = new SaveSetting();
-            obj.From = textBox1.Text;
-            obj.Num0 = textBox2.Text;
-            obj.Num1 = textBox3.Text;
-            obj.Num2 = textBox4.Text;
-            obj.Num3 = textBox5.Text;
-            obj.Num4 = textBox6.Text;
-            obj.Num5 = textBox7.Text;
-            obj.Num6 = textBox8.Text;
-            obj.Num7 = textBox9.Text;
-            obj.Num8 = textBox10.Text;
-            obj.Num9 = textBox11.Text;
+            var setting = new SaveSetting
+            {
+                From = NormalizeDirectoryPath(textBox1.Text),
+                Num0 = NormalizeDirectoryPath(textBox2.Text),
+                Num1 = NormalizeDirectoryPath(textBox3.Text),
+                Num2 = NormalizeDirectoryPath(textBox4.Text),
+                Num3 = NormalizeDirectoryPath(textBox5.Text),
+                Num4 = NormalizeDirectoryPath(textBox6.Text),
+                Num5 = NormalizeDirectoryPath(textBox7.Text),
+                Num6 = NormalizeDirectoryPath(textBox8.Text),
+                Num7 = NormalizeDirectoryPath(textBox9.Text),
+                Num8 = NormalizeDirectoryPath(textBox10.Text),
+                Num9 = NormalizeDirectoryPath(textBox11.Text)
+            };
 
             var serializer = new XmlSerializer(typeof(SaveSetting));
-            using (var sw = new StreamWriter(SettingFileName, false, new UTF8Encoding(false)))
+            using (var streamWriter = new StreamWriter(settingFileName, false, new UTF8Encoding(false)))
             {
-                serializer.Serialize(sw, obj);
+                serializer.Serialize(streamWriter, setting);
             }
         }
-        #endregion 移動先保存
 
-        #region 移動先復元
         /// <summary>
         /// 移動先復元
         /// </summary>
         private void LoadSetting()
         {
             var serializer = new XmlSerializer(typeof(SaveSetting));
-            using (var sr = new StreamReader(SettingFileName, new UTF8Encoding(false)))
+
+            using (var streamReader = new StreamReader(settingFileName, new UTF8Encoding(false)))
             {
-                var obj = (SaveSetting)serializer.Deserialize(sr);
-                textBox1.Text = obj.From;
-                textBox2.Text = obj.Num0;
-                textBox3.Text = obj.Num1;
-                textBox4.Text = obj.Num2;
-                textBox5.Text = obj.Num3;
-                textBox6.Text = obj.Num4;
-                textBox7.Text = obj.Num5;
-                textBox8.Text = obj.Num6;
-                textBox9.Text = obj.Num7;
-                textBox10.Text = obj.Num8;
-                textBox11.Text = obj.Num9;
+                var setting = (SaveSetting)serializer.Deserialize(streamReader);
+
+                textBox1.Text = NormalizeDirectoryPath(setting.From);
+                textBox2.Text = NormalizeDirectoryPath(setting.Num0);
+                textBox3.Text = NormalizeDirectoryPath(setting.Num1);
+                textBox4.Text = NormalizeDirectoryPath(setting.Num2);
+                textBox5.Text = NormalizeDirectoryPath(setting.Num3);
+                textBox6.Text = NormalizeDirectoryPath(setting.Num4);
+                textBox7.Text = NormalizeDirectoryPath(setting.Num5);
+                textBox8.Text = NormalizeDirectoryPath(setting.Num6);
+                textBox9.Text = NormalizeDirectoryPath(setting.Num7);
+                textBox10.Text = NormalizeDirectoryPath(setting.Num8);
+                textBox11.Text = NormalizeDirectoryPath(setting.Num9);
             }
         }
-        #endregion 移動先復元
+        #endregion 設定保存・復元
+
+        #region ショートカット
+        /// <summary>
+        /// ショートカットキーを処理する
+        /// </summary>
+        private bool TryHandleShortcut(Keys keyData)
+        {
+            switch (keyData)
+            {
+                case Keys.Right:
+                    ShowNextImage();
+                    return true;
+                case Keys.Left:
+                    ShowPreviousImage();
+                    return true;
+                case Keys.Up:
+                    ImageRightTurn90();
+                    return true;
+                case Keys.Down:
+                    ImageLeftTurn90();
+                    return true;
+                case Keys.F5:
+                    ReloadImages();
+                    return true;
+                case Keys.D0:
+                case Keys.NumPad0:
+                    return MoveByShortcut(0);
+                case Keys.D1:
+                case Keys.NumPad1:
+                    return MoveByShortcut(1);
+                case Keys.D2:
+                case Keys.NumPad2:
+                    return MoveByShortcut(2);
+                case Keys.D3:
+                case Keys.NumPad3:
+                    return MoveByShortcut(3);
+                case Keys.D4:
+                case Keys.NumPad4:
+                    return MoveByShortcut(4);
+                case Keys.D5:
+                case Keys.NumPad5:
+                    return MoveByShortcut(5);
+                case Keys.D6:
+                case Keys.NumPad6:
+                    return MoveByShortcut(6);
+                case Keys.D7:
+                case Keys.NumPad7:
+                    return MoveByShortcut(7);
+                case Keys.D8:
+                case Keys.NumPad8:
+                    return MoveByShortcut(8);
+                case Keys.D9:
+                case Keys.NumPad9:
+                    return MoveByShortcut(9);
+                default:
+                    return false;
+            }
+        }
+
+        /// <summary>
+        /// キーに対応する移動先へ画像を移動する
+        /// </summary>
+        private bool MoveByShortcut(int destinationIndex)
+        {
+            if (destinationIndex < 0 || destinationIndex >= destinationTextBoxes.Count)
+            {
+                return false;
+            }
+
+            MoveCurrentImage(destinationTextBoxes[destinationIndex]);
+            return true;
+        }
+
+        /// <summary>
+        /// パス入力欄にフォーカスがあるか
+        /// </summary>
+        private bool IsPathTextBoxFocused()
+        {
+            return EnumeratePathTextBoxes().Any(textBox => textBox.Focused);
+        }
+        #endregion ショートカット
+
+        #region 共通ユーティリティ
+        /// <summary>
+        /// 現在表示中の画像パスを取得する
+        /// </summary>
+        private string GetCurrentImagePath()
+        {
+            if (!HasCurrentImage())
+            {
+                return null;
+            }
+
+            return imagePaths[currentImageIndex];
+        }
+
+        /// <summary>
+        /// 現在有効な画像があるか
+        /// </summary>
+        private bool HasCurrentImage()
+        {
+            return currentImageIndex >= 0 && currentImageIndex < imagePaths.Count;
+        }
+
+        /// <summary>
+        /// フォルダパスを正規化する
+        /// </summary>
+        private string NormalizeDirectoryPath(string rawPath)
+        {
+            return string.IsNullOrWhiteSpace(rawPath) ? string.Empty : rawPath.Trim().Trim('"');
+        }
+
+        /// <summary>
+        /// 実在するフォルダか確認する
+        /// </summary>
+        private bool TryGetExistingDirectory(string rawPath, out string normalizedPath)
+        {
+            normalizedPath = NormalizeDirectoryPath(rawPath);
+            return !string.IsNullOrWhiteSpace(normalizedPath) && Directory.Exists(normalizedPath);
+        }
+        #endregion 共通ユーティリティ
         #endregion メソッド
     }
 }
