@@ -1,0 +1,6 @@
+.vs/
+ImageMove/bin/
+ImageMove/obj/
+ImageMove/setting.xml
+*.user
+*.suo
