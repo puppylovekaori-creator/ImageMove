@@ -285,29 +285,20 @@ namespace ImageMove
         /// </summary>
         private void CreateDestinationMoveButtons()
         {
-            const int moveButtonWidth = 110;
-            const int moveButtonSpacing = 12;
-
-            SuspendLayout();
+            destinationLayoutPanel.SuspendLayout();
 
             try
             {
                 for (int index = 0; index < destinationTextBoxes.Count; index++)
                 {
                     TextBox destinationTextBox = destinationTextBoxes[index];
-                    int originalLeft = destinationTextBox.Left;
-                    int offset = moveButtonWidth + moveButtonSpacing;
-
-                    destinationTextBox.Left = originalLeft + offset;
-                    destinationTextBox.Width -= offset;
-
                     var moveButton = new Button
                     {
                         Name = "destinationMoveButton" + index,
                         Text = "移動",
-                        Size = new Size(moveButtonWidth, button6.Height),
-                        Location = new Point(originalLeft, destinationTextBox.Top - 4),
-                        Margin = new Padding(6),
+                        Dock = DockStyle.Fill,
+                        AutoSize = true,
+                        Margin = new Padding(6, 3, 6, 3),
                         Tag = index,
                         TabIndex = destinationTextBox.TabIndex,
                         UseVisualStyleBackColor = true
@@ -315,13 +306,13 @@ namespace ImageMove
 
                     moveButton.Click += DestinationMoveButton_Click;
 
-                    Controls.Add(moveButton);
+                    destinationLayoutPanel.Controls.Add(moveButton, 3, index);
                     destinationMoveButtons.Add(moveButton);
                 }
             }
             finally
             {
-                ResumeLayout(false);
+                destinationLayoutPanel.ResumeLayout(false);
             }
         }
         #endregion 初期化
@@ -800,6 +791,47 @@ namespace ImageMove
                 textBox9.Text = NormalizeDirectoryPath(setting.Num7);
                 textBox10.Text = NormalizeDirectoryPath(setting.Num8);
                 textBox11.Text = NormalizeDirectoryPath(setting.Num9);
+            }
+        }
+
+        /// <summary>
+        /// メニューから設定保存
+        /// </summary>
+        private void MenuSaveSettings_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                SaveSetting();
+                MessageBox.Show("設定を保存しました。", "ImageMove", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                logger.Error("設定保存に失敗しました。", ex);
+                MessageBox.Show("設定保存に失敗しました。", "ImageMove", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        /// <summary>
+        /// メニューから設定読込
+        /// </summary>
+        private void MenuLoadSettings_Click(object sender, EventArgs e)
+        {
+            if (!File.Exists(settingFileName))
+            {
+                MessageBox.Show("設定ファイルが見つかりません。", "ImageMove", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            try
+            {
+                LoadSetting();
+                UpdateDestinationActionButtons();
+                MessageBox.Show("設定を読み込みました。", "ImageMove", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                logger.Error("設定読み込みに失敗しました。", ex);
+                MessageBox.Show("設定読み込みに失敗しました。", "ImageMove", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
         #endregion 設定保存・復元
