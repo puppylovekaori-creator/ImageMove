@@ -1,0 +1,240 @@
+[CmdletBinding()]
+param(
+    [int]$TextFileCount = 20000,
+    [int]$SyntheticImageCount = 250000,
+    [int]$ExpectedVisibleRowLimit = 100000
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+$repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$solutionPath = Join-Path $repoRoot 'ImageMove.sln'
+$releaseExePath = Join-Path $repoRoot 'ImageMove\bin\Release\ImageMove.exe'
+$msbuildPath = 'C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe'
+
+function Invoke-PrivateMethod {
+    param(
+        [Parameter(Mandatory = $true)] $Target,
+        [Parameter(Mandatory = $true)][string]$MethodName,
+        [object[]]$Arguments = @()
+    )
+
+    $method = $Target.GetType().GetMethod($MethodName, [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    if ($null -eq $method) {
+        throw "Method not found: $MethodName"
+    }
+
+    return $method.Invoke($Target, $Arguments)
+}
+
+function Get-PrivateFieldValue {
+    param(
+        [Parameter(Mandatory = $true)] $Target,
+        [Parameter(Mandatory = $true)][string]$FieldName
+    )
+
+    $field = $Target.GetType().GetField($FieldName, [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    if ($null -eq $field) {
+        throw "Field not found: $FieldName"
+    }
+
+    return $field.GetValue($Target)
+}
+
+function Set-PrivateFieldValue {
+    param(
+        [Parameter(Mandatory = $true)] $Target,
+        [Parameter(Mandatory = $true)][string]$FieldName,
+        [Parameter(Mandatory = $true)] $Value
+    )
+
+    $field = $Target.GetType().GetField($FieldName, [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    if ($null -eq $field) {
+        throw "Field not found: $FieldName"
+    }
+
+    $field.SetValue($Target, $Value)
+}
+
+function Wait-Until {
+    param(
+        [Parameter(Mandatory = $true)][scriptblock]$Condition,
+        [int]$TimeoutMs = 15000
+    )
+
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    while (-not (& $Condition)) {
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 25
+        if ($stopwatch.ElapsedMilliseconds -gt $TimeoutMs) {
+            throw "Timeout after $TimeoutMs ms."
+        }
+    }
+}
+
+function New-JpegFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [string]$Text
+    )
+
+    $bitmap = New-Object System.Drawing.Bitmap 48, 48
+    try {
+        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+        try {
+            $graphics.Clear([System.Drawing.Color]::White)
+            $graphics.DrawRectangle([System.Drawing.Pens]::DarkBlue, 1, 1, 46, 46)
+            if (-not [string]::IsNullOrWhiteSpace($Text)) {
+                $graphics.DrawString($Text, [System.Drawing.SystemFonts]::DefaultFont, [System.Drawing.Brushes]::Black, 4, 16)
+            }
+        }
+        finally {
+            $graphics.Dispose()
+        }
+
+        $bitmap.Save($Path, [System.Drawing.Imaging.ImageFormat]::Jpeg)
+    }
+    finally {
+        $bitmap.Dispose()
+    }
+}
+
+function New-TempDirectory {
+    param([string]$Prefix)
+
+    $path = Join-Path ([System.IO.Path]::GetTempPath()) ($Prefix + '_' + [Guid]::NewGuid().ToString('N'))
+    [System.IO.Directory]::CreateDirectory($path) | Out-Null
+    return $path
+}
+
+Write-Host 'BUILD: Release'
+& $msbuildPath $solutionPath /t:Build /p:Configuration=Release /m | Out-Host
+if ($LASTEXITCODE -ne 0) {
+    throw "MSBuild failed with exit code $LASTEXITCODE"
+}
+
+if (-not (Test-Path $releaseExePath)) {
+    throw "Release exe not found: $releaseExePath"
+}
+
+[void][System.Reflection.Assembly]::LoadFrom($releaseExePath)
+
+$mainForm = New-Object ImageMove.Main
+$mainForm.Show()
+[System.Windows.Forms.Application]::DoEvents()
+
+$browserForm = $null
+$mixedRoot = $null
+$syntheticRoot = $null
+
+try {
+    $sourceTextBox = Get-PrivateFieldValue -Target $mainForm -FieldName 'textBox1'
+
+    Write-Host "TEST1: mixed scan with $TextFileCount text files"
+    $mixedRoot = New-TempDirectory -Prefix 'ImageMoveMixedScan'
+    $txtRoot = Join-Path $mixedRoot 'txt'
+    $imgRoot = Join-Path $mixedRoot 'img'
+    [System.IO.Directory]::CreateDirectory($txtRoot) | Out-Null
+    [System.IO.Directory]::CreateDirectory($imgRoot) | Out-Null
+
+    for ($index = 0; $index -lt $TextFileCount; $index++) {
+        $subDir = Join-Path $txtRoot ('group_' + ($index % 20).ToString('00'))
+        if (-not (Test-Path $subDir)) {
+            [System.IO.Directory]::CreateDirectory($subDir) | Out-Null
+        }
+
+        $filePath = Join-Path $subDir ('note_' + $index.ToString('000000') + '.txt')
+        [System.IO.File]::WriteAllText($filePath, [string]::Empty, [System.Text.Encoding]::UTF8)
+    }
+
+    1..3 | ForEach-Object {
+        New-JpegFile -Path (Join-Path $imgRoot ("sample_$($_).jpg")) -Text $_
+    }
+
+    $sourceTextBox.Text = $mixedRoot
+    $reloadStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    Invoke-PrivateMethod -Target $mainForm -MethodName 'ReloadImages' | Out-Null
+    $reloadStopwatch.Stop()
+
+    $loadedPaths = Get-PrivateFieldValue -Target $mainForm -FieldName 'imagePaths'
+    if ($loadedPaths.Count -ne 3) {
+        throw "Expected 3 images after mixed scan, actual=$($loadedPaths.Count)"
+    }
+
+    Write-Host ("RESULT1: loaded={0} elapsed_ms={1}" -f $loadedPaths.Count, $reloadStopwatch.ElapsedMilliseconds)
+
+    Write-Host "TEST2: virtual browser with $SyntheticImageCount synthetic image paths"
+    $syntheticRoot = New-TempDirectory -Prefix 'ImageMoveSyntheticBrowser'
+    $sourceTextBox.Text = $syntheticRoot
+
+    $syntheticPaths = New-Object 'System.Collections.Generic.List[string]'
+    for ($index = 0; $index -lt $SyntheticImageCount; $index++) {
+        $bucket = Join-Path $syntheticRoot ('bucket_' + ($index % 100).ToString('000'))
+        $syntheticPaths.Add((Join-Path $bucket ('sample_' + $index.ToString('000000') + '.jpg')))
+    }
+
+    Set-PrivateFieldValue -Target $mainForm -FieldName 'imagePaths' -Value $syntheticPaths
+    Set-PrivateFieldValue -Target $mainForm -FieldName 'currentImageIndex' -Value 0
+
+    $openStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    Invoke-PrivateMethod -Target $mainForm -MethodName 'OpenImageListBrowser_Click' -Arguments @($null, [System.EventArgs]::Empty) | Out-Null
+    $openStopwatch.Stop()
+
+    $browserForm = Get-PrivateFieldValue -Target $mainForm -FieldName 'imageListBrowserForm'
+    if ($null -eq $browserForm) {
+        throw 'Browser form was not created.'
+    }
+
+    $isFilterMethod = $browserForm.GetType().GetMethod('IsFilterInProgressForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    $rowCountMethod = $browserForm.GetType().GetMethod('VisibleRowCountForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    $filterMethod = $browserForm.GetType().GetMethod('StartImmediateFilterForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+
+    if ($null -eq $isFilterMethod -or $null -eq $rowCountMethod -or $null -eq $filterMethod) {
+        throw 'Test helper methods were not found on ImageListBrowserForm.'
+    }
+
+    if ($openStopwatch.ElapsedMilliseconds -gt 5000) {
+        throw "Browser open returned too slowly: $($openStopwatch.ElapsedMilliseconds) ms"
+    }
+
+    Wait-Until -TimeoutMs 30000 -Condition { -not [bool]$isFilterMethod.Invoke($browserForm, @()) }
+    $visibleCount = [int]$rowCountMethod.Invoke($browserForm, @())
+    $expectedVisibleCount = [Math]::Min($SyntheticImageCount, $ExpectedVisibleRowLimit)
+    if ($visibleCount -ne $expectedVisibleCount) {
+        throw "Expected $expectedVisibleCount visible rows, actual=$visibleCount"
+    }
+
+    $filterStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $filterMethod.Invoke($browserForm, @('1999')) | Out-Null
+    Wait-Until -TimeoutMs 30000 -Condition { -not [bool]$isFilterMethod.Invoke($browserForm, @()) }
+    $filterStopwatch.Stop()
+
+    $filteredCount = [int]$rowCountMethod.Invoke($browserForm, @())
+    if ($filteredCount -le 0 -or $filteredCount -gt $ExpectedVisibleRowLimit) {
+        throw "Filtered row count is invalid: $filteredCount"
+    }
+
+    Write-Host ("RESULT2: open_ms={0} visible={1} filter_ms={2} filtered={3}" -f $openStopwatch.ElapsedMilliseconds, $visibleCount, $filterStopwatch.ElapsedMilliseconds, $filteredCount)
+    Write-Host 'IMAGE_MOVE_LARGE_LIST_SMOKE_OK'
+}
+finally {
+    if ($browserForm -ne $null -and -not $browserForm.IsDisposed) {
+        $browserForm.Close()
+        $browserForm.Dispose()
+    }
+
+    if ($mainForm -ne $null -and -not $mainForm.IsDisposed) {
+        $mainForm.Close()
+        $mainForm.Dispose()
+    }
+
+    foreach ($path in @($mixedRoot, $syntheticRoot)) {
+        if (-not [string]::IsNullOrWhiteSpace($path) -and (Test-Path $path)) {
+            Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}

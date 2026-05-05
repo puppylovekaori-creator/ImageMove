@@ -3,18 +3,34 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace ImageMove
 {
     internal sealed class ImageListBrowserForm : Form
     {
+        private const int MaxVisibleRows = 100000;
+
         private readonly Main ownerMain;
         private readonly HashSet<string> checkedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly TextBox filterTextBox;
         private readonly DataGridView imageGrid;
         private readonly Label summaryLabel;
-        private List<ImageBrowserItem> allItems = new List<ImageBrowserItem>();
+        private readonly System.Windows.Forms.Timer filterDelayTimer;
+        private CancellationTokenSource filterCts;
+        private ImageBrowserSnapshot currentSnapshot = ImageBrowserSnapshot.Empty;
+        private int[] filteredIndices = Array.Empty<int>();
+        private readonly Dictionary<int, string> relativePathCache = new Dictionary<int, string>();
+        private string currentPath = string.Empty;
+        private string pendingPreferredSelectedPath = string.Empty;
+        private bool filterInProgress;
+        private bool showAllRows = true;
+        private int visibleRowCount;
+        private int visibleStartIndex;
+        private int matchedRowCount;
+        private string truncationMessage = string.Empty;
 
         internal ImageListBrowserForm(Main ownerMain)
         {
@@ -24,6 +40,12 @@ namespace ImageMove
             StartPosition = FormStartPosition.CenterParent;
             ClientSize = new Size(1120, 760);
             MinimumSize = new Size(920, 620);
+
+            filterDelayTimer = new System.Windows.Forms.Timer
+            {
+                Interval = 280
+            };
+            filterDelayTimer.Tick += FilterDelayTimer_Tick;
 
             var rootLayout = new TableLayoutPanel
             {
@@ -57,7 +79,7 @@ namespace ImageMove
             {
                 Dock = DockStyle.Fill
             };
-            filterTextBox.TextChanged += (_, __) => ApplyFilter();
+            filterTextBox.TextChanged += FilterTextBox_TextChanged;
             filterPanel.Controls.Add(filterTextBox, 1, 0);
 
             var clearFilterButton = new Button
@@ -88,7 +110,9 @@ namespace ImageMove
                 MultiSelect = false,
                 RowHeadersVisible = false,
                 SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-                EditMode = DataGridViewEditMode.EditOnEnter
+                EditMode = DataGridViewEditMode.EditOnEnter,
+                VirtualMode = true,
+                ReadOnly = false
             };
             imageGrid.Columns.Add(new DataGridViewCheckBoxColumn
             {
@@ -125,7 +149,8 @@ namespace ImageMove
                 ReadOnly = true
             });
             imageGrid.CurrentCellDirtyStateChanged += ImageGrid_CurrentCellDirtyStateChanged;
-            imageGrid.CellValueChanged += ImageGrid_CellValueChanged;
+            imageGrid.CellValueNeeded += ImageGrid_CellValueNeeded;
+            imageGrid.CellValuePushed += ImageGrid_CellValuePushed;
             imageGrid.CellDoubleClick += (_, __) => JumpToSelectedImage();
 
             var actionPanel = new TableLayoutPanel
@@ -166,7 +191,8 @@ namespace ImageMove
             clearCheckButton.Click += (_, __) =>
             {
                 checkedPaths.Clear();
-                ApplyFilter();
+                imageGrid.InvalidateColumn(imageGrid.Columns["checked"].Index);
+                UpdateSummaryLabel();
             };
             actionPanel.Controls.Add(clearCheckButton, 2, 0);
 
@@ -195,46 +221,153 @@ namespace ImageMove
         internal void RefreshItems()
         {
             string selectedPath = GetSelectedPath();
-            allItems = ownerMain.GetImageBrowserItems().ToList();
-            checkedPaths.RemoveWhere(path => allItems.All(item => !string.Equals(item.FullPath, path, StringComparison.OrdinalIgnoreCase)));
-            ApplyFilter(selectedPath);
+            currentSnapshot = ownerMain.GetImageBrowserSnapshot();
+            currentPath = currentSnapshot.CurrentPath ?? string.Empty;
+            relativePathCache.Clear();
+            BeginApplyFilterAsync((filterTextBox.Text ?? string.Empty).Trim(), selectedPath);
         }
 
-        private void ApplyFilter(string preferredSelectedPath = null)
+        protected override void OnFormClosed(FormClosedEventArgs e)
         {
-            string filter = (filterTextBox.Text ?? string.Empty).Trim();
-            IEnumerable<ImageBrowserItem> filteredItems = allItems;
+            filterDelayTimer.Stop();
+            filterCts?.Cancel();
+            filterCts?.Dispose();
+            base.OnFormClosed(e);
+        }
 
-            if (!string.IsNullOrWhiteSpace(filter))
+        internal void UpdateCurrentPath(string newCurrentPath)
+        {
+            currentPath = newCurrentPath ?? string.Empty;
+            imageGrid.InvalidateColumn(imageGrid.Columns["current"].Index);
+        }
+
+        internal bool IsFilterInProgressForTest()
+        {
+            return filterInProgress;
+        }
+
+        internal int VisibleRowCountForTest()
+        {
+            return visibleRowCount;
+        }
+
+        internal void StartImmediateFilterForTest(string filterText)
+        {
+            filterTextBox.Text = filterText ?? string.Empty;
+            BeginApplyFilterAsync(filterTextBox.Text.Trim(), GetSelectedPath());
+        }
+
+        private void FilterTextBox_TextChanged(object sender, EventArgs e)
+        {
+            pendingPreferredSelectedPath = GetSelectedPath() ?? currentPath;
+            filterDelayTimer.Stop();
+            filterDelayTimer.Start();
+            UpdateSummaryLabel();
+        }
+
+        private void FilterDelayTimer_Tick(object sender, EventArgs e)
+        {
+            filterDelayTimer.Stop();
+            BeginApplyFilterAsync((filterTextBox.Text ?? string.Empty).Trim(), pendingPreferredSelectedPath);
+        }
+
+        private void BeginApplyFilterAsync(string filterText, string preferredSelectedPath)
+        {
+            filterCts?.Cancel();
+            filterCts?.Dispose();
+            filterCts = new CancellationTokenSource();
+            CancellationToken token = filterCts.Token;
+            ImageBrowserSnapshot snapshot = currentSnapshot;
+
+            filterInProgress = true;
+            UpdateSummaryLabel();
+
+            Task.Run(() => BuildFilteredRows(snapshot, filterText, token), token)
+                .ContinueWith(
+                    task =>
+                    {
+                        if (IsDisposed || token.IsCancellationRequested)
+                        {
+                            return;
+                        }
+
+                        filterInProgress = false;
+
+                        if (task.IsCanceled)
+                        {
+                            UpdateSummaryLabel();
+                            return;
+                        }
+
+                        if (task.IsFaulted)
+                        {
+                            UpdateSummaryLabel();
+                            MessageBox.Show("画像一覧の絞り込み中にエラーが発生しました。", "画像一覧", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                            return;
+                        }
+
+                        FilterResult result = task.Result;
+                        showAllRows = result.ShowAllRows;
+                        filteredIndices = result.Indices;
+                        visibleRowCount = result.RowCount;
+                        visibleStartIndex = result.StartIndex;
+                        matchedRowCount = result.MatchedCount;
+                        truncationMessage = result.TruncationMessage;
+                        imageGrid.RowCount = visibleRowCount;
+                        UpdateSummaryLabel();
+                        RestoreSelectedRow(preferredSelectedPath);
+                        imageGrid.Invalidate();
+                    },
+                    CancellationToken.None,
+                    TaskContinuationOptions.None,
+                    TaskScheduler.FromCurrentSynchronizationContext());
+        }
+
+        private static FilterResult BuildFilteredRows(ImageBrowserSnapshot snapshot, string filterText, CancellationToken token)
+        {
+            string[] paths = snapshot.FullPaths;
+            if (paths.Length == 0)
             {
-                filteredItems = filteredItems.Where(item =>
-                    item.FileName.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    item.RelativePath.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0);
+                return FilterResult.Empty;
             }
 
-            imageGrid.Rows.Clear();
-            foreach (ImageBrowserItem item in filteredItems)
+            if (string.IsNullOrWhiteSpace(filterText))
             {
-                int rowIndex = imageGrid.Rows.Add(
-                    checkedPaths.Contains(item.FullPath),
-                    item.IsCurrent ? "●" : string.Empty,
-                    item.FileName,
-                    item.RelativePath,
-                    item.FullPath);
-
-                DataGridViewRow row = imageGrid.Rows[rowIndex];
-                row.Tag = item;
-                row.Cells["fullPath"].ToolTipText = item.FullPath;
-                row.Cells["relativePath"].ToolTipText = item.RelativePath;
-
-                if (item.IsCurrent)
+                int visibleCount = Math.Min(paths.Length, MaxVisibleRows);
+                int startIndex = 0;
+                string truncationMessage = string.Empty;
+                if (paths.Length > MaxVisibleRows)
                 {
-                    row.DefaultCellStyle.BackColor = Color.FromArgb(255, 249, 196);
+                    int preferredIndex = snapshot.CurrentIndex >= 0 ? snapshot.CurrentIndex : 0;
+                    startIndex = Math.Max(0, Math.Min(preferredIndex - (MaxVisibleRows / 2), paths.Length - MaxVisibleRows));
+                    truncationMessage = $"件数が多いため現在位置付近 {visibleCount:N0} 件だけ表示しています。";
+                }
+
+                return FilterResult.AllRows(visibleCount, startIndex, paths.Length, truncationMessage);
+            }
+
+            var matches = new List<int>(Math.Min(paths.Length, MaxVisibleRows));
+            int matchedCount = 0;
+            for (int index = 0; index < paths.Length; index++)
+            {
+                token.ThrowIfCancellationRequested();
+                string path = paths[index];
+                if (path.IndexOf(filterText, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    Path.GetFileName(path).IndexOf(filterText, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    matchedCount++;
+                    if (matches.Count < MaxVisibleRows)
+                    {
+                        matches.Add(index);
+                    }
                 }
             }
 
-            summaryLabel.Text = $"表示 {imageGrid.Rows.Count} 件 / 全体 {allItems.Count} 件 / チェック {checkedPaths.Count} 件";
-            RestoreSelectedRow(preferredSelectedPath);
+            string filteredTruncationMessage = matchedCount > MaxVisibleRows
+                ? $"一致件数が多いため先頭 {MaxVisibleRows:N0} 件だけ表示しています。"
+                : string.Empty;
+
+            return FilterResult.Filtered(matches.ToArray(), matchedCount, filteredTruncationMessage);
         }
 
         private void RestoreSelectedRow(string preferredSelectedPath)
@@ -242,38 +375,48 @@ namespace ImageMove
             string targetPath = preferredSelectedPath;
             if (string.IsNullOrWhiteSpace(targetPath))
             {
-                targetPath = allItems.FirstOrDefault(item => item.IsCurrent)?.FullPath;
+                targetPath = currentPath;
             }
 
-            if (string.IsNullOrWhiteSpace(targetPath))
+            if (string.IsNullOrWhiteSpace(targetPath) || visibleRowCount == 0)
             {
                 return;
             }
 
-            foreach (DataGridViewRow row in imageGrid.Rows)
+            int directRowIndex = TryResolveDirectRowIndex(targetPath);
+            if (directRowIndex >= 0)
             {
-                if (row.Tag is ImageBrowserItem item &&
-                    string.Equals(item.FullPath, targetPath, StringComparison.OrdinalIgnoreCase))
-                {
-                    row.Selected = true;
-                    if (row.Cells.Count > 1)
-                    {
-                        imageGrid.CurrentCell = row.Cells[1];
-                    }
+                SelectRow(directRowIndex);
+                return;
+            }
 
-                    break;
+            for (int rowIndex = 0; rowIndex < filteredIndices.Length; rowIndex++)
+            {
+                string path = currentSnapshot.FullPaths[filteredIndices[rowIndex]];
+                if (!string.Equals(path, targetPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
                 }
+
+                SelectRow(rowIndex);
+                break;
             }
         }
 
         private string GetSelectedPath()
         {
-            if (imageGrid.CurrentRow?.Tag is ImageBrowserItem currentItem)
+            if (imageGrid.CurrentRow == null)
             {
-                return currentItem.FullPath;
+                return null;
             }
 
-            return null;
+            int masterIndex = GetMasterIndex(imageGrid.CurrentRow.Index);
+            if (masterIndex < 0)
+            {
+                return null;
+            }
+
+            return currentSnapshot.FullPaths[masterIndex];
         }
 
         private void JumpToSelectedImage()
@@ -291,13 +434,14 @@ namespace ImageMove
                 return;
             }
 
-            RefreshItems();
+            UpdateCurrentPath(targetPath);
         }
 
         private void BatchMoveButton_Click(object sender, EventArgs e)
         {
+            HashSet<string> currentPaths = new HashSet<string>(currentSnapshot.FullPaths, StringComparer.OrdinalIgnoreCase);
             List<string> selectedPaths = checkedPaths
-                .Where(path => allItems.Any(item => string.Equals(item.FullPath, path, StringComparison.OrdinalIgnoreCase)))
+                .Where(currentPaths.Contains)
                 .ToList();
 
             if (selectedPaths.Count == 0)
@@ -331,6 +475,13 @@ namespace ImageMove
             }
         }
 
+        private void UpdateSummaryLabel()
+        {
+            string state = filterInProgress ? " / 絞り込み中" : string.Empty;
+            string suffix = string.IsNullOrWhiteSpace(truncationMessage) ? string.Empty : $" / {truncationMessage}";
+            summaryLabel.Text = $"表示 {visibleRowCount:N0} 件 / 対象 {matchedRowCount:N0} 件 / 全体 {currentSnapshot.FullPaths.Length:N0} 件 / チェック {checkedPaths.Count:N0} 件{state}{suffix}";
+        }
+
         private void ImageGrid_CurrentCellDirtyStateChanged(object sender, EventArgs e)
         {
             if (imageGrid.IsCurrentCellDirty)
@@ -339,29 +490,152 @@ namespace ImageMove
             }
         }
 
-        private void ImageGrid_CellValueChanged(object sender, DataGridViewCellEventArgs e)
+        private void ImageGrid_CellValueNeeded(object sender, DataGridViewCellValueEventArgs e)
         {
-            if (e.RowIndex < 0 || e.ColumnIndex != imageGrid.Columns["checked"].Index)
+            int masterIndex = GetMasterIndex(e.RowIndex);
+            if (masterIndex < 0)
             {
                 return;
             }
 
-            if (!(imageGrid.Rows[e.RowIndex].Tag is ImageBrowserItem item))
+            string path = currentSnapshot.FullPaths[masterIndex];
+            string columnName = imageGrid.Columns[e.ColumnIndex].Name;
+
+            switch (columnName)
+            {
+                case "checked":
+                    e.Value = checkedPaths.Contains(path);
+                    break;
+                case "current":
+                    e.Value = string.Equals(path, currentPath, StringComparison.OrdinalIgnoreCase) ? "●" : string.Empty;
+                    break;
+                case "fileName":
+                    e.Value = Path.GetFileName(path);
+                    break;
+                case "relativePath":
+                    e.Value = GetRelativePath(masterIndex, path);
+                    break;
+                case "fullPath":
+                    e.Value = path;
+                    break;
+            }
+        }
+
+        private void ImageGrid_CellValuePushed(object sender, DataGridViewCellValueEventArgs e)
+        {
+            if (e.ColumnIndex != imageGrid.Columns["checked"].Index)
             {
                 return;
             }
 
-            bool isChecked = Convert.ToBoolean(imageGrid.Rows[e.RowIndex].Cells["checked"].Value);
+            int masterIndex = GetMasterIndex(e.RowIndex);
+            if (masterIndex < 0)
+            {
+                return;
+            }
+
+            string path = currentSnapshot.FullPaths[masterIndex];
+            bool isChecked = e.Value != null && Convert.ToBoolean(e.Value);
             if (isChecked)
             {
-                checkedPaths.Add(item.FullPath);
+                checkedPaths.Add(path);
             }
             else
             {
-                checkedPaths.Remove(item.FullPath);
+                checkedPaths.Remove(path);
             }
 
-            summaryLabel.Text = $"表示 {imageGrid.Rows.Count} 件 / 全体 {allItems.Count} 件 / チェック {checkedPaths.Count} 件";
+            UpdateSummaryLabel();
+        }
+
+        private int TryResolveDirectRowIndex(string targetPath)
+        {
+            if (!showAllRows)
+            {
+                return -1;
+            }
+
+            if (currentSnapshot.CurrentIndex >= visibleStartIndex &&
+                currentSnapshot.CurrentIndex < visibleStartIndex + visibleRowCount &&
+                currentSnapshot.CurrentIndex < currentSnapshot.FullPaths.Length &&
+                string.Equals(currentSnapshot.FullPaths[currentSnapshot.CurrentIndex], targetPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return currentSnapshot.CurrentIndex - visibleStartIndex;
+            }
+
+            int absoluteIndex = Array.FindIndex(
+                currentSnapshot.FullPaths,
+                path => string.Equals(path, targetPath, StringComparison.OrdinalIgnoreCase));
+
+            if (absoluteIndex < visibleStartIndex || absoluteIndex >= visibleStartIndex + visibleRowCount)
+            {
+                return -1;
+            }
+
+            return absoluteIndex - visibleStartIndex;
+        }
+
+        private int GetMasterIndex(int rowIndex)
+        {
+            if (rowIndex < 0 || rowIndex >= visibleRowCount)
+            {
+                return -1;
+            }
+
+            return showAllRows ? visibleStartIndex + rowIndex : filteredIndices[rowIndex];
+        }
+
+        private void SelectRow(int rowIndex)
+        {
+            if (rowIndex < 0 || rowIndex >= imageGrid.RowCount)
+            {
+                return;
+            }
+
+            imageGrid.ClearSelection();
+            imageGrid.Rows[rowIndex].Selected = true;
+            if (imageGrid.Columns.Count > 1)
+            {
+                imageGrid.CurrentCell = imageGrid.Rows[rowIndex].Cells[1];
+            }
+        }
+
+        private string GetRelativePath(int masterIndex, string fullPath)
+        {
+            if (relativePathCache.TryGetValue(masterIndex, out string cachedValue))
+            {
+                return cachedValue;
+            }
+
+            string relativePath = BuildRelativePath(currentSnapshot.SourceRoot, fullPath);
+            relativePathCache[masterIndex] = relativePath;
+            return relativePath;
+        }
+
+        private static string BuildRelativePath(string sourceRoot, string fullPath)
+        {
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(sourceRoot) && Directory.Exists(sourceRoot))
+                {
+                    string normalizedRoot = Path.GetFullPath(sourceRoot);
+                    if (!normalizedRoot.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal))
+                    {
+                        normalizedRoot += Path.DirectorySeparatorChar;
+                    }
+
+                    Uri rootUri = new Uri(normalizedRoot);
+                    Uri pathUri = new Uri(Path.GetFullPath(fullPath));
+                    string relativePath = Uri.UnescapeDataString(rootUri.MakeRelativeUri(pathUri).ToString());
+                    return relativePath.Replace('/', Path.DirectorySeparatorChar);
+                }
+            }
+            catch
+            {
+                // 相対パス化に失敗した場合はフルパスを返す
+            }
+
+            return fullPath;
         }
     }
 
@@ -523,7 +797,8 @@ namespace ImageMove
         {
             if (configuredDestinationRadioButton.Checked)
             {
-                if (!(configuredDestinationComboBox.SelectedItem is DestinationChoice choice))
+                var choice = configuredDestinationComboBox.SelectedItem as DestinationChoice;
+                if (choice == null)
                 {
                     MessageBox.Show("親画面で設定済みの移動先を選択してください。", "一括移動", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
@@ -550,6 +825,27 @@ namespace ImageMove
         }
     }
 
+    internal sealed class ImageBrowserSnapshot
+    {
+        internal static readonly ImageBrowserSnapshot Empty = new ImageBrowserSnapshot(Array.Empty<string>(), string.Empty, string.Empty, -1);
+
+        internal ImageBrowserSnapshot(string[] fullPaths, string sourceRoot, string currentPath, int currentIndex)
+        {
+            FullPaths = fullPaths ?? Array.Empty<string>();
+            SourceRoot = sourceRoot ?? string.Empty;
+            CurrentPath = currentPath ?? string.Empty;
+            CurrentIndex = currentIndex;
+        }
+
+        internal string[] FullPaths { get; }
+
+        internal string SourceRoot { get; }
+
+        internal string CurrentPath { get; }
+
+        internal int CurrentIndex { get; }
+    }
+
     internal sealed class ImageBrowserItem
     {
         public string FileName { get; set; }
@@ -559,6 +855,43 @@ namespace ImageMove
         public string FullPath { get; set; }
 
         public bool IsCurrent { get; set; }
+    }
+
+    internal sealed class FilterResult
+    {
+        private FilterResult(bool showAllRows, int[] indices, int rowCount, int startIndex, int matchedCount, string truncationMessage)
+        {
+            ShowAllRows = showAllRows;
+            Indices = indices ?? Array.Empty<int>();
+            RowCount = rowCount;
+            StartIndex = startIndex;
+            MatchedCount = matchedCount;
+            TruncationMessage = truncationMessage ?? string.Empty;
+        }
+
+        internal bool ShowAllRows { get; }
+
+        internal int[] Indices { get; }
+
+        internal int RowCount { get; }
+
+        internal int StartIndex { get; }
+
+        internal int MatchedCount { get; }
+
+        internal string TruncationMessage { get; }
+
+        internal static FilterResult Empty { get; } = new FilterResult(false, Array.Empty<int>(), 0, 0, 0, string.Empty);
+
+        internal static FilterResult AllRows(int rowCount, int startIndex, int matchedCount, string truncationMessage)
+        {
+            return new FilterResult(true, Array.Empty<int>(), rowCount, startIndex, matchedCount, truncationMessage);
+        }
+
+        internal static FilterResult Filtered(int[] indices, int matchedCount, string truncationMessage)
+        {
+            return new FilterResult(false, indices, indices?.Length ?? 0, 0, matchedCount, truncationMessage);
+        }
     }
 
     internal sealed class DestinationChoice

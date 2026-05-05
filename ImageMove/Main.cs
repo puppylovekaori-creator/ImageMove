@@ -521,6 +521,7 @@ namespace ImageMove
                 }
 
                 DisplayCurrentImage();
+                RefreshImageBrowserItemsIfOpen();
                 SaveSettingSafe();
             }
             catch (Exception ex)
@@ -616,7 +617,7 @@ namespace ImageMove
                 }
 
                 UpdateNavigationButtons();
-                RefreshImageBrowserIfOpen();
+                UpdateImageBrowserCurrentPathIfOpen(imagePath);
             }
             catch (Exception ex)
             {
@@ -654,7 +655,7 @@ namespace ImageMove
             }
 
             UpdateNavigationButtons();
-            RefreshImageBrowserIfOpen();
+            UpdateImageBrowserCurrentPathIfOpen(string.Empty);
         }
         #endregion 画像表示
 
@@ -929,7 +930,7 @@ namespace ImageMove
                 FocusRestoredImage(action);
                 UpdateUndoState();
                 SaveSettingSafe();
-                RefreshImageBrowserIfOpen();
+                RefreshImageBrowserItemsIfOpen();
             }
             catch (Exception ex)
             {
@@ -1039,9 +1040,9 @@ namespace ImageMove
         }
 
         /// <summary>
-        /// 一覧別窓が開いていれば更新する
+        /// 一覧別窓が開いていれば一覧を再構築する
         /// </summary>
-        private void RefreshImageBrowserIfOpen()
+        private void RefreshImageBrowserItemsIfOpen()
         {
             if (imageListBrowserForm != null && !imageListBrowserForm.IsDisposed)
             {
@@ -1050,21 +1051,27 @@ namespace ImageMove
         }
 
         /// <summary>
-        /// 一覧別窓用の画像一覧を返す
+        /// 一覧別窓が開いていれば現在位置だけ更新する
         /// </summary>
-        internal IReadOnlyList<ImageBrowserItem> GetImageBrowserItems()
+        private void UpdateImageBrowserCurrentPathIfOpen(string currentPath)
+        {
+            if (imageListBrowserForm != null && !imageListBrowserForm.IsDisposed)
+            {
+                imageListBrowserForm.UpdateCurrentPath(currentPath);
+            }
+        }
+
+        /// <summary>
+        /// 一覧別窓用の画像一覧スナップショットを返す
+        /// </summary>
+        internal ImageBrowserSnapshot GetImageBrowserSnapshot()
         {
             string sourceRoot = NormalizeDirectoryPath(textBox1.Text);
-
-            return imagePaths
-                .Select((path, index) => new ImageBrowserItem
-                {
-                    FileName = Path.GetFileName(path),
-                    RelativePath = BuildRelativePath(sourceRoot, path),
-                    FullPath = path,
-                    IsCurrent = index == currentImageIndex
-                })
-                .ToList();
+            return new ImageBrowserSnapshot(
+                imagePaths.ToArray(),
+                sourceRoot,
+                GetCurrentImagePath() ?? string.Empty,
+                currentImageIndex);
         }
 
         /// <summary>
@@ -1411,12 +1418,13 @@ namespace ImageMove
                     ClearDisplayedImage("画像がありません。");
                 }
 
+                RefreshImageBrowserItemsIfOpen();
                 SaveSettingSafe();
             }
             else
             {
                 UpdateNavigationButtons();
-                RefreshImageBrowserIfOpen();
+                RefreshImageBrowserItemsIfOpen();
             }
 
             result.MovedCount = movedItems.Count;
