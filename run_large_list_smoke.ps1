@@ -13,7 +13,7 @@ Add-Type -AssemblyName System.Drawing
 
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $solutionPath = Join-Path $repoRoot 'ImageMove.sln'
-$releaseExePath = Join-Path $repoRoot 'ImageMove\bin\Release\ImageMove.exe'
+$releaseExePath = Join-Path $repoRoot 'release\ImageMove.exe'
 $msbuildPath = 'C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe'
 
 function Invoke-PrivateMethod {
@@ -129,6 +129,7 @@ $mainForm.Show()
 
 $browserForm = $null
 $mixedRoot = $null
+$prefetchRoot = $null
 $syntheticRoot = $null
 
 try {
@@ -166,6 +167,34 @@ try {
     }
 
     Write-Host ("RESULT1: loaded={0} elapsed_ms={1}" -f $loadedPaths.Count, $reloadStopwatch.ElapsedMilliseconds)
+
+    Write-Host 'TEST1B: prefetch cache warm-up'
+    $prefetchRoot = New-TempDirectory -Prefix 'ImageMovePrefetch'
+    1..24 | ForEach-Object {
+        New-JpegFile -Path (Join-Path $prefetchRoot ("prefetch_$($_.ToString('000')).jpg")) -Text $_
+    }
+
+    $sourceTextBox.Text = $prefetchRoot
+    Invoke-PrivateMethod -Target $mainForm -MethodName 'ReloadImages' | Out-Null
+    $prefetchPaths = Get-PrivateFieldValue -Target $mainForm -FieldName 'imagePaths'
+    $cacheEntries = Get-PrivateFieldValue -Target $mainForm -FieldName 'imageCacheEntries'
+
+    Wait-Until -TimeoutMs 10000 -Condition { $cacheEntries.Count -ge 6 }
+    if (-not $cacheEntries.ContainsKey($prefetchPaths[1])) {
+        throw 'Prefetch cache did not warm the next image.'
+    }
+
+    $nextStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    Invoke-PrivateMethod -Target $mainForm -MethodName 'ShowNextImage' | Out-Null
+    $nextStopwatch.Stop()
+
+    $currentIndexAfterNext = [int](Get-PrivateFieldValue -Target $mainForm -FieldName 'currentImageIndex')
+    if ($currentIndexAfterNext -ne 1) {
+        throw "Expected current index 1 after next image, actual=$currentIndexAfterNext"
+    }
+
+    Wait-Until -TimeoutMs 10000 -Condition { $cacheEntries.Count -ge 8 }
+    Write-Host ("RESULT1B: cache={0} next_ms={1}" -f $cacheEntries.Count, $nextStopwatch.ElapsedMilliseconds)
 
     Write-Host "TEST2: virtual browser with $SyntheticImageCount synthetic image paths"
     $syntheticRoot = New-TempDirectory -Prefix 'ImageMoveSyntheticBrowser'
@@ -232,7 +261,7 @@ finally {
         $mainForm.Dispose()
     }
 
-    foreach ($path in @($mixedRoot, $syntheticRoot)) {
+    foreach ($path in @($mixedRoot, $prefetchRoot, $syntheticRoot)) {
         if (-not [string]::IsNullOrWhiteSpace($path) -and (Test-Path $path)) {
             Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
         }

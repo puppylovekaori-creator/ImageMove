@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Xml.Serialization;
 using log4net;
@@ -18,6 +19,10 @@ namespace ImageMove
         private const int MinimumRestoreHeight = 700;
         private const int RepeatInitialDelayMs = 360;
         private const int RepeatIntervalMs = 90;
+        private const int PrefetchAheadImageCount = 48;
+        private const int PrefetchBehindImageCount = 12;
+        private const int MaxCachedImageCount = 96;
+        private const long MaxCachedImageBytes = 1536L * 1024L * 1024L;
 
         #region フィールド
         /// <summary> ロガー </summary>
@@ -91,6 +96,24 @@ namespace ImageMove
 
         /// <summary> 復元待ちの左右ペイン境界位置 </summary>
         private int pendingMainSplitterDistance;
+
+        /// <summary> 画像キャッシュ用ロック </summary>
+        private readonly object imageCacheSync = new object();
+
+        /// <summary> 先読み済み画像キャッシュ </summary>
+        private readonly Dictionary<string, CachedImageEntry> imageCacheEntries = new Dictionary<string, CachedImageEntry>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary> 画像キャッシュの利用順 </summary>
+        private readonly LinkedList<string> imageCacheLru = new LinkedList<string>();
+
+        /// <summary> キャッシュ利用順ノード検索用 </summary>
+        private readonly Dictionary<string, LinkedListNode<string>> imageCacheNodes = new Dictionary<string, LinkedListNode<string>>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary> 現在確保している画像キャッシュ量 </summary>
+        private long cachedImageBytes;
+
+        /// <summary> 進行中の先読みキャンセル用 </summary>
+        private System.Threading.CancellationTokenSource imagePrefetchCancellationTokenSource;
         #endregion フィールド
 
         #region コンストラクタ
@@ -310,6 +333,8 @@ namespace ImageMove
         private void Main_FormClosing(object sender, FormClosingEventArgs e)
         {
             StopRepeatAction();
+            CancelImagePrefetch();
+            ClearImageCache();
             SaveSettingSafe();
         }
         #endregion イベント
@@ -670,6 +695,9 @@ namespace ImageMove
 
             try
             {
+                CancelImagePrefetch();
+                ClearImageCache();
+
                 if (!TryGetExistingDirectory(textBox1.Text, out string sourceDirectory))
                 {
                     MessageBox.Show("読み込みフォルダを指定してください。");
@@ -763,14 +791,17 @@ namespace ImageMove
             }
 
             string imagePath = imagePaths[currentImageIndex];
+            Bitmap displayBitmap = null;
 
             try
             {
-                using (var fileStream = new FileStream(imagePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                using (var sourceImage = Image.FromStream(fileStream))
+                if (!TryGetCachedImageClone(imagePath, out displayBitmap))
                 {
-                    ReplaceDisplayedImage(new Bitmap(sourceImage));
+                    displayBitmap = LoadDisplayImageAndPopulateCache(imagePath);
                 }
+
+                ReplaceDisplayedImage(displayBitmap);
+                displayBitmap = null;
 
                 label1.Text = Path.GetFileName(imagePath);
                 label12.Text = string.Format("{0}枚中{1}枚目", imagePaths.Count, currentImageIndex + 1);
@@ -786,9 +817,11 @@ namespace ImageMove
 
                 UpdateNavigationButtons();
                 UpdateImageBrowserCurrentPathIfOpen(imagePath);
+                ScheduleImagePrefetch(currentImageIndex);
             }
             catch (Exception ex)
             {
+                displayBitmap?.Dispose();
                 logger.Fatal(string.Format("画像表示でエラーが発生しました。 Path={0}", imagePath), ex);
                 MessageBox.Show("画像の表示に失敗しました。");
             }
@@ -809,6 +842,7 @@ namespace ImageMove
         /// </summary>
         private void ClearDisplayedImage(string statusText)
         {
+            CancelImagePrefetch();
             ReplaceDisplayedImage(null);
             label1.Text = string.Empty;
             label12.Text = statusText;
@@ -824,6 +858,11 @@ namespace ImageMove
 
             UpdateNavigationButtons();
             UpdateImageBrowserCurrentPathIfOpen(string.Empty);
+
+            if (imagePaths.Count == 0)
+            {
+                ClearImageCache();
+            }
         }
         #endregion 画像表示
 
@@ -1664,6 +1703,7 @@ namespace ImageMove
             }
 
             imagePaths.RemoveAt(removeIndex);
+            RemoveCachedImage(sourcePath);
 
             if (removeIndex < currentImageIndex)
             {
@@ -1786,6 +1826,312 @@ namespace ImageMove
             }
 
             return fullPath;
+        }
+
+        /// <summary>
+        /// キャッシュを含めて表示用画像を読み込む
+        /// </summary>
+        private Bitmap LoadDisplayImageAndPopulateCache(string imagePath)
+        {
+            Bitmap cacheBitmap = LoadBitmapCopy(imagePath);
+            Bitmap displayBitmap = null;
+
+            try
+            {
+                displayBitmap = (Bitmap)cacheBitmap.Clone();
+                if (TryAddCachedImage(imagePath, cacheBitmap))
+                {
+                    cacheBitmap = null;
+                }
+
+                return displayBitmap;
+            }
+            catch
+            {
+                displayBitmap?.Dispose();
+                throw;
+            }
+            finally
+            {
+                cacheBitmap?.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// 画像ファイルを複製可能な Bitmap として読み込む
+        /// </summary>
+        private Bitmap LoadBitmapCopy(string imagePath)
+        {
+            using (var fileStream = new FileStream(imagePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            using (var sourceImage = Image.FromStream(fileStream))
+            {
+                return new Bitmap(sourceImage);
+            }
+        }
+
+        /// <summary>
+        /// 表示用にキャッシュ画像を複製して返す
+        /// </summary>
+        private bool TryGetCachedImageClone(string imagePath, out Bitmap displayBitmap)
+        {
+            lock (imageCacheSync)
+            {
+                if (!imageCacheEntries.TryGetValue(imagePath, out CachedImageEntry entry))
+                {
+                    displayBitmap = null;
+                    return false;
+                }
+
+                TouchCachedImageEntry(imagePath);
+                displayBitmap = (Bitmap)entry.Bitmap.Clone();
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// 画像をキャッシュへ追加する
+        /// </summary>
+        private bool TryAddCachedImage(string imagePath, Bitmap bitmap)
+        {
+            if (bitmap == null)
+            {
+                return false;
+            }
+
+            lock (imageCacheSync)
+            {
+                if (imageCacheEntries.ContainsKey(imagePath))
+                {
+                    TouchCachedImageEntry(imagePath);
+                    return false;
+                }
+
+                long estimatedBytes = EstimateBitmapBytes(bitmap);
+                var node = imageCacheLru.AddLast(imagePath);
+                imageCacheNodes[imagePath] = node;
+                imageCacheEntries[imagePath] = new CachedImageEntry(bitmap, estimatedBytes);
+                cachedImageBytes += estimatedBytes;
+                TrimImageCacheIfNeeded();
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// キャッシュ済み画像を削除する
+        /// </summary>
+        private void RemoveCachedImage(string imagePath)
+        {
+            lock (imageCacheSync)
+            {
+                RemoveCachedImageCore(imagePath);
+            }
+        }
+
+        /// <summary>
+        /// 画像キャッシュを全て破棄する
+        /// </summary>
+        private void ClearImageCache()
+        {
+            lock (imageCacheSync)
+            {
+                foreach (CachedImageEntry entry in imageCacheEntries.Values)
+                {
+                    entry.Bitmap.Dispose();
+                }
+
+                imageCacheEntries.Clear();
+                imageCacheNodes.Clear();
+                imageCacheLru.Clear();
+                cachedImageBytes = 0;
+            }
+        }
+
+        /// <summary>
+        /// 現在位置の前後画像を先読みする
+        /// </summary>
+        private void ScheduleImagePrefetch(int centerIndex)
+        {
+            CancelImagePrefetch();
+
+            if (imagePaths.Count == 0 || centerIndex < 0 || centerIndex >= imagePaths.Count)
+            {
+                return;
+            }
+
+            string[] pathSnapshot = imagePaths.ToArray();
+            var cancellationTokenSource = new System.Threading.CancellationTokenSource();
+            imagePrefetchCancellationTokenSource = cancellationTokenSource;
+
+            Task.Run(() => PrefetchImagesAroundIndex(pathSnapshot, centerIndex, cancellationTokenSource.Token), cancellationTokenSource.Token)
+                .ContinueWith(
+                    task =>
+                    {
+                        if (task.IsFaulted && task.Exception != null)
+                        {
+                            logger.Debug("画像先読みで例外が発生しました。", task.Exception.GetBaseException());
+                        }
+                    },
+                    TaskContinuationOptions.OnlyOnFaulted);
+        }
+
+        /// <summary>
+        /// 進行中の画像先読みを停止する
+        /// </summary>
+        private void CancelImagePrefetch()
+        {
+            System.Threading.CancellationTokenSource cancellationTokenSource = imagePrefetchCancellationTokenSource;
+            imagePrefetchCancellationTokenSource = null;
+            if (cancellationTokenSource == null)
+            {
+                return;
+            }
+
+            try
+            {
+                cancellationTokenSource.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // 既に破棄済みの場合は無視する
+            }
+            finally
+            {
+                cancellationTokenSource.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// 指定位置の前後画像をバックグラウンドで先読みする
+        /// </summary>
+        private void PrefetchImagesAroundIndex(IReadOnlyList<string> pathSnapshot, int centerIndex, System.Threading.CancellationToken cancellationToken)
+        {
+            foreach (int candidateIndex in EnumeratePrefetchCandidateIndexes(pathSnapshot.Count, centerIndex))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                string imagePath = pathSnapshot[candidateIndex];
+                if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath))
+                {
+                    continue;
+                }
+
+                lock (imageCacheSync)
+                {
+                    if (imageCacheEntries.ContainsKey(imagePath))
+                    {
+                        TouchCachedImageEntry(imagePath);
+                        continue;
+                    }
+                }
+
+                Bitmap prefetchedBitmap = null;
+                try
+                {
+                    prefetchedBitmap = LoadBitmapCopy(imagePath);
+                    if (TryAddCachedImage(imagePath, prefetchedBitmap))
+                    {
+                        prefetchedBitmap = null;
+                    }
+                }
+                catch (System.OperationCanceledException)
+                {
+                    prefetchedBitmap?.Dispose();
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    prefetchedBitmap?.Dispose();
+                    logger.Debug(string.Format("画像先読みに失敗しました。 Path={0}", imagePath), ex);
+                }
+            }
+        }
+
+        /// <summary>
+        /// 先読み対象のインデックス順を返す
+        /// </summary>
+        private IEnumerable<int> EnumeratePrefetchCandidateIndexes(int totalCount, int centerIndex)
+        {
+            for (int offset = 1; offset <= PrefetchAheadImageCount; offset++)
+            {
+                int aheadIndex = centerIndex + offset;
+                if (aheadIndex >= totalCount)
+                {
+                    break;
+                }
+
+                yield return aheadIndex;
+            }
+
+            for (int offset = 1; offset <= PrefetchBehindImageCount; offset++)
+            {
+                int behindIndex = centerIndex - offset;
+                if (behindIndex < 0)
+                {
+                    break;
+                }
+
+                yield return behindIndex;
+            }
+        }
+
+        /// <summary>
+        /// キャッシュの利用順を更新する
+        /// </summary>
+        private void TouchCachedImageEntry(string imagePath)
+        {
+            if (!imageCacheNodes.TryGetValue(imagePath, out LinkedListNode<string> node) || ReferenceEquals(node, imageCacheLru.Last))
+            {
+                return;
+            }
+
+            imageCacheLru.Remove(node);
+            imageCacheLru.AddLast(node);
+        }
+
+        /// <summary>
+        /// キャッシュ上限を超えた古い画像を破棄する
+        /// </summary>
+        private void TrimImageCacheIfNeeded()
+        {
+            while (imageCacheEntries.Count > MaxCachedImageCount || cachedImageBytes > MaxCachedImageBytes)
+            {
+                LinkedListNode<string> node = imageCacheLru.First;
+                if (node == null)
+                {
+                    break;
+                }
+
+                RemoveCachedImageCore(node.Value);
+            }
+        }
+
+        /// <summary>
+        /// キャッシュ削除の実体
+        /// </summary>
+        private void RemoveCachedImageCore(string imagePath)
+        {
+            if (!imageCacheEntries.TryGetValue(imagePath, out CachedImageEntry entry))
+            {
+                return;
+            }
+
+            imageCacheEntries.Remove(imagePath);
+            if (imageCacheNodes.TryGetValue(imagePath, out LinkedListNode<string> node))
+            {
+                imageCacheLru.Remove(node);
+                imageCacheNodes.Remove(imagePath);
+            }
+
+            cachedImageBytes = Math.Max(0, cachedImageBytes - entry.EstimatedBytes);
+            entry.Bitmap.Dispose();
+        }
+
+        /// <summary>
+        /// Bitmap の概算メモリ量を返す
+        /// </summary>
+        private long EstimateBitmapBytes(Bitmap bitmap)
+        {
+            return Math.Max(1L, (long)bitmap.Width * bitmap.Height * 4L);
         }
 
         /// <summary>
@@ -2044,5 +2390,18 @@ namespace ImageMove
         public string StatusText { get; }
 
         public string CurrentFileName { get; }
+    }
+
+    internal sealed class CachedImageEntry
+    {
+        public CachedImageEntry(Bitmap bitmap, long estimatedBytes)
+        {
+            Bitmap = bitmap;
+            EstimatedBytes = estimatedBytes;
+        }
+
+        public Bitmap Bitmap { get; }
+
+        public long EstimatedBytes { get; }
     }
 }
