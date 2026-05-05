@@ -14,6 +14,8 @@ namespace ImageMove
     public partial class Main : Form
     {
         private const string AppDisplayName = "ImageMove";
+        private const int MinimumRestoreWidth = 960;
+        private const int MinimumRestoreHeight = 700;
 
         #region フィールド
         /// <summary> ロガー </summary>
@@ -1178,6 +1180,7 @@ namespace ImageMove
         /// </summary>
         private void SaveSetting()
         {
+            Rectangle windowBounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
             var setting = new SaveSetting
             {
                 From = NormalizeDirectoryPath(textBox1.Text),
@@ -1190,7 +1193,12 @@ namespace ImageMove
                 Num6 = NormalizeDirectoryPath(textBox8.Text),
                 Num7 = NormalizeDirectoryPath(textBox9.Text),
                 Num8 = NormalizeDirectoryPath(textBox10.Text),
-                Num9 = NormalizeDirectoryPath(textBox11.Text)
+                Num9 = NormalizeDirectoryPath(textBox11.Text),
+                WindowLeft = windowBounds.Left,
+                WindowTop = windowBounds.Top,
+                WindowWidth = windowBounds.Width,
+                WindowHeight = windowBounds.Height,
+                WindowState = WindowState.ToString()
             };
 
             var serializer = new XmlSerializer(typeof(SaveSetting));
@@ -1222,6 +1230,7 @@ namespace ImageMove
                 textBox9.Text = NormalizeDirectoryPath(setting.Num7);
                 textBox10.Text = NormalizeDirectoryPath(setting.Num8);
                 textBox11.Text = NormalizeDirectoryPath(setting.Num9);
+                ApplySavedWindowBounds(setting);
             }
         }
 
@@ -1567,6 +1576,62 @@ namespace ImageMove
             }
 
             return fullPath;
+        }
+
+        /// <summary>
+        /// 保存済みの画面サイズと位置を復元する
+        /// </summary>
+        private void ApplySavedWindowBounds(SaveSetting setting)
+        {
+            if (!TryGetRestorableWindowBounds(setting, out Rectangle restoredBounds))
+            {
+                return;
+            }
+
+            StartPosition = FormStartPosition.Manual;
+            Bounds = restoredBounds;
+
+            if (string.Equals(setting.WindowState, FormWindowState.Maximized.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                WindowState = FormWindowState.Maximized;
+            }
+        }
+
+        /// <summary>
+        /// 復元可能な画面サイズと位置かを判定する
+        /// </summary>
+        private bool TryGetRestorableWindowBounds(SaveSetting setting, out Rectangle restoredBounds)
+        {
+            restoredBounds = Rectangle.Empty;
+
+            if (setting == null || setting.WindowWidth < MinimumRestoreWidth || setting.WindowHeight < MinimumRestoreHeight)
+            {
+                return false;
+            }
+
+            Rectangle candidateBounds = new Rectangle(
+                setting.WindowLeft,
+                setting.WindowTop,
+                setting.WindowWidth,
+                setting.WindowHeight);
+
+            foreach (Screen screen in Screen.AllScreens)
+            {
+                Rectangle workingArea = screen.WorkingArea;
+                if (!workingArea.IntersectsWith(candidateBounds))
+                {
+                    continue;
+                }
+
+                int width = Math.Min(candidateBounds.Width, workingArea.Width);
+                int height = Math.Min(candidateBounds.Height, workingArea.Height);
+                int left = Math.Min(Math.Max(candidateBounds.Left, workingArea.Left), workingArea.Right - width);
+                int top = Math.Min(Math.Max(candidateBounds.Top, workingArea.Top), workingArea.Bottom - height);
+                restoredBounds = new Rectangle(left, top, width, height);
+                return true;
+            }
+
+            return false;
         }
         #endregion 共通ユーティリティ
         #endregion メソッド

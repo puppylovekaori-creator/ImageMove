@@ -33,5 +33,15 @@ namespace ImageMove
         public string Num8;
         /// <summary> Num9 </summary>
         public string Num9;
+        /// <summary> 画面左位置 </summary>
+        public int WindowLeft;
+        /// <summary> 画面上位置 </summary>
+        public int WindowTop;
+        /// <summary> 画面幅 </summary>
+        public int WindowWidth;
+        /// <summary> 画面高さ </summary>
+        public int WindowHeight;
+        /// <summary> 画面状態 </summary>
+        public string WindowState;
     }
 }
