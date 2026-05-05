@@ -18,6 +18,9 @@ namespace ImageMove
         private readonly TextBox filterTextBox;
         private readonly DataGridView imageGrid;
         private readonly Label summaryLabel;
+        private readonly ProgressBar batchMoveProgressBar;
+        private readonly Label batchMoveStatusLabel;
+        private readonly List<Control> batchMoveBusyControls = new List<Control>();
         private readonly System.Windows.Forms.Timer filterDelayTimer;
         private CancellationTokenSource filterCts;
         private ImageBrowserSnapshot currentSnapshot = ImageBrowserSnapshot.Empty;
@@ -31,6 +34,7 @@ namespace ImageMove
         private int visibleStartIndex;
         private int matchedRowCount;
         private string truncationMessage = string.Empty;
+        private bool batchMoveInProgress;
 
         internal ImageListBrowserForm(Main ownerMain)
         {
@@ -153,6 +157,31 @@ namespace ImageMove
             imageGrid.CellValuePushed += ImageGrid_CellValuePushed;
             imageGrid.CellDoubleClick += (_, __) => JumpToSelectedImage();
 
+            var batchMoveStatusPanel = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2
+            };
+            batchMoveStatusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 260F));
+            batchMoveStatusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+
+            batchMoveProgressBar = new ProgressBar
+            {
+                Dock = DockStyle.Fill,
+                Minimum = 0,
+                Maximum = 1,
+                Value = 0,
+                Margin = new Padding(0, 4, 12, 4)
+            };
+            batchMoveStatusPanel.Controls.Add(batchMoveProgressBar, 0, 0);
+
+            batchMoveStatusLabel = new Label
+            {
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            batchMoveStatusPanel.Controls.Add(batchMoveStatusLabel, 1, 0);
+
             var actionPanel = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -232,10 +261,30 @@ namespace ImageMove
             closeButton.Click += (_, __) => Close();
             actionPanel.Controls.Add(closeButton, 6, 0);
 
+            rootLayout.RowCount = 4;
+            rootLayout.RowStyles.Clear();
+            rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40F));
+            rootLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36F));
+            rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 84F));
             rootLayout.Controls.Add(filterPanel, 0, 0);
             rootLayout.Controls.Add(imageGrid, 0, 1);
-            rootLayout.Controls.Add(actionPanel, 0, 2);
+            rootLayout.Controls.Add(batchMoveStatusPanel, 0, 2);
+            rootLayout.Controls.Add(actionPanel, 0, 3);
             Controls.Add(rootLayout);
+
+            batchMoveBusyControls.Add(filterTextBox);
+            batchMoveBusyControls.Add(clearFilterButton);
+            batchMoveBusyControls.Add(refreshButton);
+            batchMoveBusyControls.Add(imageGrid);
+            batchMoveBusyControls.Add(jumpButton);
+            batchMoveBusyControls.Add(checkAllButton);
+            batchMoveBusyControls.Add(checkVisibleButton);
+            batchMoveBusyControls.Add(clearCheckButton);
+            batchMoveBusyControls.Add(batchMoveButton);
+            batchMoveBusyControls.Add(closeButton);
+
+            ResetBatchMoveProgress();
         }
 
         internal void RefreshItems()
@@ -477,21 +526,45 @@ namespace ImageMove
                     return;
                 }
 
-                BatchMoveExecutionResult result = ownerMain.MoveImagesFromBrowser(selectedPaths, dialog.SelectedFolderPath, dialog.SelectedLabel);
-                foreach (string movedPath in result.MovedSourcePaths)
+                try
                 {
-                    checkedPaths.Remove(movedPath);
+                    SetBatchMoveBusyState(true);
+                    UpdateBatchMoveProgress(new BatchMoveProgressInfo(selectedPaths.Count, 0, 0, 0, "一括移動を開始します。", string.Empty));
+                    Application.DoEvents();
+
+                    BatchMoveExecutionResult result = ownerMain.MoveImagesFromBrowser(
+                        selectedPaths,
+                        dialog.SelectedFolderPath,
+                        dialog.SelectedLabel,
+                        UpdateBatchMoveProgress);
+
+                    foreach (string movedPath in result.MovedSourcePaths)
+                    {
+                        checkedPaths.Remove(movedPath);
+                    }
+
+                    RefreshItems();
+
+                    UpdateBatchMoveProgress(new BatchMoveProgressInfo(
+                        selectedPaths.Count,
+                        selectedPaths.Count,
+                        result.MovedCount,
+                        result.SkippedMessages.Count,
+                        $"一括移動が完了しました。 移動 {result.MovedCount:N0} 件 / スキップ {result.SkippedMessages.Count:N0} 件",
+                        string.Empty));
+
+                    string message = $"移動完了: {result.MovedCount} 件";
+                    if (result.SkippedMessages.Count > 0)
+                    {
+                        message += Environment.NewLine + string.Join(Environment.NewLine, result.SkippedMessages.Take(5));
+                    }
+
+                    MessageBox.Show(message, "画像一覧", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
-
-                RefreshItems();
-
-                string message = $"移動完了: {result.MovedCount} 件";
-                if (result.SkippedMessages.Count > 0)
+                finally
                 {
-                    message += Environment.NewLine + string.Join(Environment.NewLine, result.SkippedMessages.Take(5));
+                    SetBatchMoveBusyState(false);
                 }
-
-                MessageBox.Show(message, "画像一覧", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
         }
 
@@ -500,6 +573,62 @@ namespace ImageMove
             string state = filterInProgress ? " / 絞り込み中" : string.Empty;
             string suffix = string.IsNullOrWhiteSpace(truncationMessage) ? string.Empty : $" / {truncationMessage}";
             summaryLabel.Text = $"表示 {visibleRowCount:N0} 件 / 対象 {matchedRowCount:N0} 件 / 全体 {currentSnapshot.FullPaths.Length:N0} 件 / チェック {checkedPaths.Count:N0} 件{state}{suffix}";
+        }
+
+        private void SetBatchMoveBusyState(bool isBusy)
+        {
+            batchMoveInProgress = isBusy;
+            UseWaitCursor = isBusy;
+
+            foreach (Control control in batchMoveBusyControls)
+            {
+                control.Enabled = !isBusy;
+            }
+
+            if (!isBusy)
+            {
+                ResetBatchMoveProgress();
+            }
+
+            batchMoveProgressBar.Refresh();
+            batchMoveStatusLabel.Refresh();
+            summaryLabel.Refresh();
+        }
+
+        private void ResetBatchMoveProgress()
+        {
+            batchMoveProgressBar.Minimum = 0;
+            batchMoveProgressBar.Maximum = 1;
+            batchMoveProgressBar.Value = 0;
+            batchMoveStatusLabel.Text = "一括移動待機中";
+        }
+
+        private void UpdateBatchMoveProgress(BatchMoveProgressInfo progress)
+        {
+            if (progress == null || IsDisposed)
+            {
+                return;
+            }
+
+            int total = Math.Max(progress.TotalCount, 1);
+            int processed = Math.Max(0, Math.Min(progress.ProcessedCount, total));
+            batchMoveProgressBar.Minimum = 0;
+            batchMoveProgressBar.Maximum = total;
+            batchMoveProgressBar.Value = processed;
+
+            string currentFile = string.IsNullOrWhiteSpace(progress.CurrentFileName)
+                ? string.Empty
+                : $" / {progress.CurrentFileName}";
+            batchMoveStatusLabel.Text =
+                $"{processed:N0}/{progress.TotalCount:N0} 件処理済み  移動 {progress.MovedCount:N0} 件  スキップ {progress.SkippedCount:N0} 件  {progress.StatusText}{currentFile}".Trim();
+
+            batchMoveProgressBar.Refresh();
+            batchMoveStatusLabel.Refresh();
+
+            if (batchMoveInProgress)
+            {
+                Application.DoEvents();
+            }
         }
 
         private async Task ApplyCheckStateAsync(CheckApplyMode mode, bool isChecked)

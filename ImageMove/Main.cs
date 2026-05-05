@@ -1256,9 +1256,13 @@ namespace ImageMove
         /// <summary>
         /// 一覧別窓から複数画像を移動する
         /// </summary>
-        internal BatchMoveExecutionResult MoveImagesFromBrowser(IReadOnlyList<string> sourcePaths, string destinationDirectory, string selectionLabel)
+        internal BatchMoveExecutionResult MoveImagesFromBrowser(
+            IReadOnlyList<string> sourcePaths,
+            string destinationDirectory,
+            string selectionLabel,
+            Action<BatchMoveProgressInfo> progressCallback = null)
         {
-            return MoveImagesToDirectory(sourcePaths, destinationDirectory, selectionLabel);
+            return MoveImagesToDirectory(sourcePaths, destinationDirectory, selectionLabel, progressCallback);
         }
         #endregion 一覧別窓
 
@@ -1477,32 +1481,51 @@ namespace ImageMove
         /// <summary>
         /// 複数画像を指定先へ移動する共通処理
         /// </summary>
-        private BatchMoveExecutionResult MoveImagesToDirectory(IEnumerable<string> sourcePaths, string destinationDirectory, string actionLabel)
+        private BatchMoveExecutionResult MoveImagesToDirectory(
+            IEnumerable<string> sourcePaths,
+            string destinationDirectory,
+            string actionLabel,
+            Action<BatchMoveProgressInfo> progressCallback = null)
         {
             var result = new BatchMoveExecutionResult();
             string normalizedDestinationDirectory = NormalizeDirectoryPath(destinationDirectory);
+            List<string> distinctSourcePaths = sourcePaths
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            int totalCount = distinctSourcePaths.Count;
+            int processedCount = 0;
+            int skippedCount = 0;
 
             if (string.IsNullOrWhiteSpace(normalizedDestinationDirectory) || !Directory.Exists(normalizedDestinationDirectory))
             {
                 result.SkippedMessages.Add("移動先フォルダを指定してください。");
+                progressCallback?.Invoke(new BatchMoveProgressInfo(totalCount, 0, 0, 1, "移動先フォルダを指定してください。", string.Empty));
                 return result;
             }
 
             var movedItems = new List<MoveHistoryItem>();
-            foreach (string sourcePath in sourcePaths
-                .Where(path => !string.IsNullOrWhiteSpace(path))
-                .Distinct(StringComparer.OrdinalIgnoreCase))
+            progressCallback?.Invoke(new BatchMoveProgressInfo(totalCount, 0, 0, 0, "一括移動を開始しました。", string.Empty));
+
+            foreach (string sourcePath in distinctSourcePaths)
             {
+                string currentFileName = Path.GetFileName(sourcePath);
                 string sourceDirectory = Path.GetDirectoryName(sourcePath) ?? string.Empty;
                 if (!File.Exists(sourcePath))
                 {
                     result.SkippedMessages.Add($"ファイルが見つからないため移動できません: {Path.GetFileName(sourcePath)}");
+                    processedCount++;
+                    skippedCount++;
+                    progressCallback?.Invoke(new BatchMoveProgressInfo(totalCount, processedCount, movedItems.Count, skippedCount, "ファイルが見つからないためスキップしました。", currentFileName));
                     continue;
                 }
 
                 if (string.Equals(sourceDirectory, normalizedDestinationDirectory, StringComparison.OrdinalIgnoreCase))
                 {
                     result.SkippedMessages.Add($"同じフォルダには移動できません: {Path.GetFileName(sourcePath)}");
+                    processedCount++;
+                    skippedCount++;
+                    progressCallback?.Invoke(new BatchMoveProgressInfo(totalCount, processedCount, movedItems.Count, skippedCount, "同じフォルダへの移動をスキップしました。", currentFileName));
                     continue;
                 }
 
@@ -1510,6 +1533,9 @@ namespace ImageMove
                 if (File.Exists(destinationPath))
                 {
                     result.SkippedMessages.Add($"移動先に同名ファイルがあります: {Path.GetFileName(sourcePath)}");
+                    processedCount++;
+                    skippedCount++;
+                    progressCallback?.Invoke(new BatchMoveProgressInfo(totalCount, processedCount, movedItems.Count, skippedCount, "移動先に同名ファイルがあるためスキップしました。", currentFileName));
                     continue;
                 }
 
@@ -1528,11 +1554,16 @@ namespace ImageMove
                     });
 
                     result.MovedSourcePaths.Add(sourcePath);
+                    processedCount++;
+                    progressCallback?.Invoke(new BatchMoveProgressInfo(totalCount, processedCount, movedItems.Count, skippedCount, "移動しました。", currentFileName));
                 }
                 catch (Exception ex)
                 {
                     logger.Error($"画像移動に失敗しました。 Source={sourcePath} Destination={destinationPath}", ex);
                     result.SkippedMessages.Add($"移動に失敗しました: {Path.GetFileName(sourcePath)}");
+                    processedCount++;
+                    skippedCount++;
+                    progressCallback?.Invoke(new BatchMoveProgressInfo(totalCount, processedCount, movedItems.Count, skippedCount, "移動に失敗しました。", currentFileName));
                 }
             }
 
@@ -1562,6 +1593,7 @@ namespace ImageMove
             result.MovedCount = movedItems.Count;
             result.ActionLabel = actionLabel;
             UpdateUndoState();
+            progressCallback?.Invoke(new BatchMoveProgressInfo(totalCount, processedCount, movedItems.Count, skippedCount, "一括移動の処理が終わりました。", string.Empty));
             return result;
         }
 
@@ -1791,5 +1823,30 @@ namespace ImageMove
         public List<string> MovedSourcePaths { get; } = new List<string>();
 
         public List<string> SkippedMessages { get; } = new List<string>();
+    }
+
+    internal sealed class BatchMoveProgressInfo
+    {
+        public BatchMoveProgressInfo(int totalCount, int processedCount, int movedCount, int skippedCount, string statusText, string currentFileName)
+        {
+            TotalCount = totalCount;
+            ProcessedCount = processedCount;
+            MovedCount = movedCount;
+            SkippedCount = skippedCount;
+            StatusText = statusText ?? string.Empty;
+            CurrentFileName = currentFileName ?? string.Empty;
+        }
+
+        public int TotalCount { get; }
+
+        public int ProcessedCount { get; }
+
+        public int MovedCount { get; }
+
+        public int SkippedCount { get; }
+
+        public string StatusText { get; }
+
+        public string CurrentFileName { get; }
     }
 }
