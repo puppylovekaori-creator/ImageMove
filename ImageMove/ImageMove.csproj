@@ -51,6 +51,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="FolderPickerDialog.cs" />
+    <Compile Include="ImageListBrowserForm.cs" />
     <Compile Include="Main.cs">
       <SubType>Form</SubType>
     </Compile>

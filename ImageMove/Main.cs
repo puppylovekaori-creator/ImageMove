@@ -13,6 +13,8 @@ namespace ImageMove
 {
     public partial class Main : Form
     {
+        private const string AppDisplayName = "ImageMove";
+
         #region フィールド
         /// <summary> ロガー </summary>
         private static readonly ILog logger = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
@@ -34,6 +36,33 @@ namespace ImageMove
 
         /// <summary> 現在表示している画像のインデックス </summary>
         private int currentImageIndex = -1;
+
+        /// <summary> 移動履歴 </summary>
+        private readonly Stack<MoveHistoryAction> moveHistoryActions = new Stack<MoveHistoryAction>();
+
+        /// <summary> 一覧別窓 </summary>
+        private ImageListBrowserForm imageListBrowserForm;
+
+        /// <summary> 左上の現在画像名表示 </summary>
+        private Label previewFileNameValueLabel;
+
+        /// <summary> 左上の進捗表示 </summary>
+        private Label previewProgressValueLabel;
+
+        /// <summary> 元に戻すボタン </summary>
+        private Button undoButton;
+
+        /// <summary> 一覧ボタン </summary>
+        private Button browserButton;
+
+        /// <summary> 元に戻すメニュー </summary>
+        private ToolStripMenuItem undoMoveToolStripMenuItem;
+
+        /// <summary> 画像一覧メニュー </summary>
+        private ToolStripMenuItem openImageListToolStripMenuItem;
+
+        /// <summary> 移動せず次へメニュー </summary>
+        private ToolStripMenuItem skipNextToolStripMenuItem;
         #endregion フィールド
 
         #region コンストラクタ
@@ -248,7 +277,12 @@ namespace ImageMove
         {
             KeyPreview = true;
             button2.Text = "画像読み込み / 再読み込み";
+            button4.Text = "移動せず次へ";
+            label1.AutoEllipsis = true;
             pictureBox1.SizeMode = PictureBoxSizeMode.Zoom;
+            ConfigurePreviewPanel();
+            ConfigureNavigationPanel();
+            ConfigureAdditionalMenus();
             CreateDestinationMoveButtons();
 
             foreach (var textBox in EnumeratePathTextBoxes())
@@ -265,6 +299,147 @@ namespace ImageMove
             FormClosing += Main_FormClosing;
             ClearDisplayedImage("画像がありません。");
             UpdateDestinationActionButtons();
+            UpdateUndoState();
+        }
+
+        /// <summary>
+        /// 左側プレビューの上部情報欄を構築する
+        /// </summary>
+        private void ConfigurePreviewPanel()
+        {
+            var previewHost = mainSplitContainer.Panel1;
+            previewHost.SuspendLayout();
+
+            try
+            {
+                previewHost.Controls.Remove(pictureBox1);
+
+                var previewLayout = new TableLayoutPanel
+                {
+                    Dock = DockStyle.Fill,
+                    ColumnCount = 2,
+                    RowCount = 3,
+                    Margin = Padding.Empty,
+                    Padding = Padding.Empty
+                };
+                previewLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90F));
+                previewLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+                previewLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
+                previewLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
+                previewLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+
+                var currentImageCaptionLabel = new Label
+                {
+                    Text = "現在画像",
+                    Dock = DockStyle.Fill,
+                    TextAlign = ContentAlignment.MiddleLeft
+                };
+                previewFileNameValueLabel = new Label
+                {
+                    Dock = DockStyle.Fill,
+                    TextAlign = ContentAlignment.MiddleLeft,
+                    AutoEllipsis = true,
+                    Font = new Font("メイリオ", 10F)
+                };
+
+                var currentProgressCaptionLabel = new Label
+                {
+                    Text = "進捗",
+                    Dock = DockStyle.Fill,
+                    TextAlign = ContentAlignment.MiddleLeft
+                };
+                previewProgressValueLabel = new Label
+                {
+                    Dock = DockStyle.Fill,
+                    TextAlign = ContentAlignment.MiddleLeft,
+                    Font = new Font("メイリオ", 10F)
+                };
+
+                pictureBox1.Dock = DockStyle.Fill;
+
+                previewLayout.Controls.Add(currentImageCaptionLabel, 0, 0);
+                previewLayout.Controls.Add(previewFileNameValueLabel, 1, 0);
+                previewLayout.Controls.Add(currentProgressCaptionLabel, 0, 1);
+                previewLayout.Controls.Add(previewProgressValueLabel, 1, 1);
+                previewLayout.Controls.Add(pictureBox1, 0, 2);
+                previewLayout.SetColumnSpan(pictureBox1, 2);
+
+                previewHost.Controls.Add(previewLayout);
+            }
+            finally
+            {
+                previewHost.ResumeLayout(false);
+            }
+        }
+
+        /// <summary>
+        /// 操作用ボタン行を拡張する
+        /// </summary>
+        private void ConfigureNavigationPanel()
+        {
+            navigationPanel.SuspendLayout();
+
+            try
+            {
+                navigationPanel.Controls.Clear();
+                navigationPanel.WrapContents = true;
+                navigationPanel.AutoScroll = true;
+                operationLayout.RowStyles[2].Height = 118F;
+
+                button3.Width = 130;
+                button4.Width = 130;
+                button5.Width = 110;
+
+                undoButton = new Button
+                {
+                    Name = "undoButton",
+                    Text = "元に戻す",
+                    Size = new Size(110, 50),
+                    UseVisualStyleBackColor = true
+                };
+                undoButton.Click += UndoButton_Click;
+
+                browserButton = new Button
+                {
+                    Name = "browserButton",
+                    Text = "一覧",
+                    Size = new Size(110, 50),
+                    UseVisualStyleBackColor = true
+                };
+                browserButton.Click += OpenImageListBrowser_Click;
+
+                navigationPanel.Controls.Add(button3);
+                navigationPanel.Controls.Add(button4);
+                navigationPanel.Controls.Add(undoButton);
+                navigationPanel.Controls.Add(browserButton);
+                navigationPanel.Controls.Add(button5);
+            }
+            finally
+            {
+                navigationPanel.ResumeLayout(false);
+            }
+        }
+
+        /// <summary>
+        /// メニューバーへ補助操作を追加する
+        /// </summary>
+        private void ConfigureAdditionalMenus()
+        {
+            var editToolStripMenuItem = new ToolStripMenuItem("編集");
+            undoMoveToolStripMenuItem = new ToolStripMenuItem("元に戻す", null, UndoButton_Click)
+            {
+                ShortcutKeys = Keys.Control | Keys.Z
+            };
+            editToolStripMenuItem.DropDownItems.Add(undoMoveToolStripMenuItem);
+
+            skipNextToolStripMenuItem = new ToolStripMenuItem("移動せず次へ (→)", null, button4_Click);
+            openImageListToolStripMenuItem = new ToolStripMenuItem("画像一覧を開く", null, OpenImageListBrowser_Click);
+
+            runToolStripMenuItem.DropDownItems.Add(new ToolStripSeparator());
+            runToolStripMenuItem.DropDownItems.Add(skipNextToolStripMenuItem);
+            runToolStripMenuItem.DropDownItems.Add(openImageListToolStripMenuItem);
+
+            menuStrip1.Items.Insert(1, editToolStripMenuItem);
         }
 
         /// <summary>
@@ -430,7 +605,18 @@ namespace ImageMove
 
                 label1.Text = Path.GetFileName(imagePath);
                 label12.Text = string.Format("{0}枚中{1}枚目", imagePaths.Count, currentImageIndex + 1);
+                if (previewFileNameValueLabel != null)
+                {
+                    previewFileNameValueLabel.Text = label1.Text;
+                }
+
+                if (previewProgressValueLabel != null)
+                {
+                    previewProgressValueLabel.Text = label12.Text;
+                }
+
                 UpdateNavigationButtons();
+                RefreshImageBrowserIfOpen();
             }
             catch (Exception ex)
             {
@@ -457,7 +643,18 @@ namespace ImageMove
             ReplaceDisplayedImage(null);
             label1.Text = string.Empty;
             label12.Text = statusText;
+            if (previewFileNameValueLabel != null)
+            {
+                previewFileNameValueLabel.Text = string.Empty;
+            }
+
+            if (previewProgressValueLabel != null)
+            {
+                previewProgressValueLabel.Text = statusText;
+            }
+
             UpdateNavigationButtons();
+            RefreshImageBrowserIfOpen();
         }
         #endregion 画像表示
 
@@ -497,7 +694,13 @@ namespace ImageMove
         {
             button3.Enabled = CanShowPreviousImage();
             button4.Enabled = CanShowNextImage();
+            if (browserButton != null)
+            {
+                browserButton.Enabled = imagePaths.Count > 0;
+            }
+
             UpdateDestinationActionButtons();
+            UpdateUndoState();
         }
 
         /// <summary>
@@ -576,41 +779,15 @@ namespace ImageMove
                     return;
                 }
 
-                string sourcePath = imagePaths[currentImageIndex];
-                string sourceDirectory = Path.GetDirectoryName(sourcePath) ?? string.Empty;
+                var result = MoveImagesToDirectory(
+                    new[] { imagePaths[currentImageIndex] },
+                    destinationDirectory,
+                    GetDestinationLabel(destinationTextBox));
 
-                if (string.Equals(sourceDirectory, destinationDirectory, StringComparison.OrdinalIgnoreCase))
+                if (result.MovedCount == 0 && result.SkippedMessages.Count > 0)
                 {
-                    MessageBox.Show("同じフォルダには移動できません。");
-                    return;
+                    MessageBox.Show(result.SkippedMessages[0], AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
-
-                string destinationPath = Path.Combine(destinationDirectory, Path.GetFileName(sourcePath));
-
-                if (File.Exists(destinationPath))
-                {
-                    MessageBox.Show("移動先に同名ファイルが存在します。");
-                    return;
-                }
-
-                File.Move(sourcePath, destinationPath);
-                imagePaths.RemoveAt(currentImageIndex);
-
-                if (currentImageIndex >= imagePaths.Count)
-                {
-                    currentImageIndex = imagePaths.Count - 1;
-                }
-
-                if (HasCurrentImage())
-                {
-                    DisplayCurrentImage();
-                }
-                else
-                {
-                    ClearDisplayedImage("画像がありません。");
-                }
-
-                SaveSettingSafe();
             }
             catch (Exception ex)
             {
@@ -705,6 +882,253 @@ namespace ImageMove
             }
         }
         #endregion 移動先アクションボタン
+
+        #region アンドゥ
+        /// <summary>
+        /// 元に戻すボタン押下
+        /// </summary>
+        private void UndoButton_Click(object sender, EventArgs e)
+        {
+            UndoLastMoveAction();
+        }
+
+        /// <summary>
+        /// 直前の移動を元に戻す
+        /// </summary>
+        private void UndoLastMoveAction()
+        {
+            if (moveHistoryActions.Count == 0)
+            {
+                MessageBox.Show("元に戻せる移動がありません。", AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            MoveHistoryAction action = moveHistoryActions.Peek();
+            string validationMessage = ValidateUndoAction(action);
+            if (!string.IsNullOrWhiteSpace(validationMessage))
+            {
+                MessageBox.Show(validationMessage, AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            try
+            {
+                foreach (MoveHistoryItem item in action.Items.OrderBy(historyItem => historyItem.OriginalIndex))
+                {
+                    string sourceDirectory = Path.GetDirectoryName(item.SourcePath) ?? string.Empty;
+                    if (!string.IsNullOrWhiteSpace(sourceDirectory))
+                    {
+                        Directory.CreateDirectory(sourceDirectory);
+                    }
+
+                    File.Move(item.DestinationPath, item.SourcePath);
+                    RestoreMovedImagePath(item);
+                }
+
+                moveHistoryActions.Pop();
+                FocusRestoredImage(action);
+                UpdateUndoState();
+                SaveSettingSafe();
+                RefreshImageBrowserIfOpen();
+            }
+            catch (Exception ex)
+            {
+                logger.Error("アンドゥに失敗しました。", ex);
+                MessageBox.Show("元に戻す処理に失敗しました。", AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        /// <summary>
+        /// アンドゥ可否表示を更新する
+        /// </summary>
+        private void UpdateUndoState()
+        {
+            bool canUndo = moveHistoryActions.Count > 0;
+
+            if (undoButton != null)
+            {
+                undoButton.Enabled = canUndo;
+            }
+
+            if (undoMoveToolStripMenuItem != null)
+            {
+                undoMoveToolStripMenuItem.Enabled = canUndo;
+            }
+        }
+
+        /// <summary>
+        /// アンドゥ可能か検証する
+        /// </summary>
+        private string ValidateUndoAction(MoveHistoryAction action)
+        {
+            foreach (MoveHistoryItem item in action.Items)
+            {
+                if (!File.Exists(item.DestinationPath))
+                {
+                    return "元に戻す対象ファイルが移動先に見つかりません。";
+                }
+
+                if (File.Exists(item.SourcePath))
+                {
+                    return "元の場所に同名ファイルがあるため、元に戻せません。";
+                }
+            }
+
+            return string.Empty;
+        }
+
+        /// <summary>
+        /// 元に戻した画像を一覧へ差し戻す
+        /// </summary>
+        private void RestoreMovedImagePath(MoveHistoryItem item)
+        {
+            int insertIndex = Math.Max(0, Math.Min(item.OriginalIndex, imagePaths.Count));
+            imagePaths.Insert(insertIndex, item.SourcePath);
+        }
+
+        /// <summary>
+        /// 元に戻した画像へフォーカスする
+        /// </summary>
+        private void FocusRestoredImage(MoveHistoryAction action)
+        {
+            string focusPath = action.Items
+                .OrderBy(historyItem => historyItem.OriginalIndex)
+                .Select(historyItem => historyItem.SourcePath)
+                .FirstOrDefault();
+
+            if (!string.IsNullOrWhiteSpace(focusPath))
+            {
+                int restoredIndex = imagePaths.FindIndex(path => string.Equals(path, focusPath, StringComparison.OrdinalIgnoreCase));
+                if (restoredIndex >= 0)
+                {
+                    currentImageIndex = restoredIndex;
+                }
+            }
+
+            NormalizeCurrentIndex();
+
+            if (HasCurrentImage())
+            {
+                DisplayCurrentImage();
+            }
+            else
+            {
+                ClearDisplayedImage("画像がありません。");
+            }
+        }
+        #endregion アンドゥ
+
+        #region 一覧別窓
+        /// <summary>
+        /// 一覧別窓を開く
+        /// </summary>
+        private void OpenImageListBrowser_Click(object sender, EventArgs e)
+        {
+            if (imageListBrowserForm == null || imageListBrowserForm.IsDisposed)
+            {
+                imageListBrowserForm = new ImageListBrowserForm(this);
+                imageListBrowserForm.FormClosed += (_, __) => imageListBrowserForm = null;
+                imageListBrowserForm.Show(this);
+            }
+            else
+            {
+                imageListBrowserForm.BringToFront();
+            }
+
+            imageListBrowserForm.RefreshItems();
+        }
+
+        /// <summary>
+        /// 一覧別窓が開いていれば更新する
+        /// </summary>
+        private void RefreshImageBrowserIfOpen()
+        {
+            if (imageListBrowserForm != null && !imageListBrowserForm.IsDisposed)
+            {
+                imageListBrowserForm.RefreshItems();
+            }
+        }
+
+        /// <summary>
+        /// 一覧別窓用の画像一覧を返す
+        /// </summary>
+        internal IReadOnlyList<ImageBrowserItem> GetImageBrowserItems()
+        {
+            string sourceRoot = NormalizeDirectoryPath(textBox1.Text);
+
+            return imagePaths
+                .Select((path, index) => new ImageBrowserItem
+                {
+                    FileName = Path.GetFileName(path),
+                    RelativePath = BuildRelativePath(sourceRoot, path),
+                    FullPath = path,
+                    IsCurrent = index == currentImageIndex
+                })
+                .ToList();
+        }
+
+        /// <summary>
+        /// 親画面で設定済みの移動先候補を返す
+        /// </summary>
+        internal IReadOnlyList<DestinationChoice> GetDestinationChoices()
+        {
+            var labels = new[]
+            {
+                label2.Text,
+                label3.Text,
+                label4.Text,
+                label5.Text,
+                label6.Text,
+                label7.Text,
+                label8.Text,
+                label9.Text,
+                label10.Text,
+                label11.Text
+            };
+
+            var choices = new List<DestinationChoice>();
+            for (int index = 0; index < destinationTextBoxes.Count; index++)
+            {
+                if (!TryGetExistingDirectory(destinationTextBoxes[index].Text, out string directory))
+                {
+                    continue;
+                }
+
+                choices.Add(new DestinationChoice
+                {
+                    DisplayName = $"{labels[index]}: {directory}",
+                    FolderPath = directory
+                });
+            }
+
+            return choices;
+        }
+
+        /// <summary>
+        /// 一覧別窓から指定画像へジャンプする
+        /// </summary>
+        internal bool ShowImageByPath(string fullPath)
+        {
+            int nextIndex = imagePaths.FindIndex(path => string.Equals(path, fullPath, StringComparison.OrdinalIgnoreCase));
+            if (nextIndex < 0)
+            {
+                return false;
+            }
+
+            currentImageIndex = nextIndex;
+            DisplayCurrentImage();
+            Activate();
+            return true;
+        }
+
+        /// <summary>
+        /// 一覧別窓から複数画像を移動する
+        /// </summary>
+        internal BatchMoveExecutionResult MoveImagesFromBrowser(IReadOnlyList<string> sourcePaths, string destinationDirectory, string selectionLabel)
+        {
+            return MoveImagesToDirectory(sourcePaths, destinationDirectory, selectionLabel);
+        }
+        #endregion 一覧別窓
 
         #region 設定保存・復元
         /// <summary>
@@ -802,12 +1226,12 @@ namespace ImageMove
             try
             {
                 SaveSetting();
-                MessageBox.Show("設定を保存しました。", "ImageMove", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("設定を保存しました。", AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
                 logger.Error("設定保存に失敗しました。", ex);
-                MessageBox.Show("設定保存に失敗しました。", "ImageMove", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show("設定保存に失敗しました。", AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -818,7 +1242,7 @@ namespace ImageMove
         {
             if (!File.Exists(settingFileName))
             {
-                MessageBox.Show("設定ファイルが見つかりません。", "ImageMove", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("設定ファイルが見つかりません。", AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
@@ -826,12 +1250,12 @@ namespace ImageMove
             {
                 LoadSetting();
                 UpdateDestinationActionButtons();
-                MessageBox.Show("設定を読み込みました。", "ImageMove", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("設定を読み込みました。", AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
                 logger.Error("設定読み込みに失敗しました。", ex);
-                MessageBox.Show("設定読み込みに失敗しました。", "ImageMove", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show("設定読み込みに失敗しました。", AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
         #endregion 設定保存・復元
@@ -858,6 +1282,9 @@ namespace ImageMove
                     return true;
                 case Keys.F5:
                     ReloadImages();
+                    return true;
+                case Keys.Control | Keys.Z:
+                    UndoLastMoveAction();
                     return true;
                 case Keys.D0:
                 case Keys.NumPad0:
@@ -909,6 +1336,155 @@ namespace ImageMove
         }
 
         /// <summary>
+        /// 複数画像を指定先へ移動する共通処理
+        /// </summary>
+        private BatchMoveExecutionResult MoveImagesToDirectory(IEnumerable<string> sourcePaths, string destinationDirectory, string actionLabel)
+        {
+            var result = new BatchMoveExecutionResult();
+            string normalizedDestinationDirectory = NormalizeDirectoryPath(destinationDirectory);
+
+            if (string.IsNullOrWhiteSpace(normalizedDestinationDirectory) || !Directory.Exists(normalizedDestinationDirectory))
+            {
+                result.SkippedMessages.Add("移動先フォルダを指定してください。");
+                return result;
+            }
+
+            var movedItems = new List<MoveHistoryItem>();
+            foreach (string sourcePath in sourcePaths
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                string sourceDirectory = Path.GetDirectoryName(sourcePath) ?? string.Empty;
+                if (!File.Exists(sourcePath))
+                {
+                    result.SkippedMessages.Add($"ファイルが見つからないため移動できません: {Path.GetFileName(sourcePath)}");
+                    continue;
+                }
+
+                if (string.Equals(sourceDirectory, normalizedDestinationDirectory, StringComparison.OrdinalIgnoreCase))
+                {
+                    result.SkippedMessages.Add($"同じフォルダには移動できません: {Path.GetFileName(sourcePath)}");
+                    continue;
+                }
+
+                string destinationPath = Path.Combine(normalizedDestinationDirectory, Path.GetFileName(sourcePath));
+                if (File.Exists(destinationPath))
+                {
+                    result.SkippedMessages.Add($"移動先に同名ファイルがあります: {Path.GetFileName(sourcePath)}");
+                    continue;
+                }
+
+                int originalIndex = imagePaths.FindIndex(path => string.Equals(path, sourcePath, StringComparison.OrdinalIgnoreCase));
+
+                try
+                {
+                    File.Move(sourcePath, destinationPath);
+                    RemoveImagePathFromQueue(sourcePath);
+
+                    movedItems.Add(new MoveHistoryItem
+                    {
+                        SourcePath = sourcePath,
+                        DestinationPath = destinationPath,
+                        OriginalIndex = originalIndex >= 0 ? originalIndex : imagePaths.Count
+                    });
+
+                    result.MovedSourcePaths.Add(sourcePath);
+                }
+                catch (Exception ex)
+                {
+                    logger.Error($"画像移動に失敗しました。 Source={sourcePath} Destination={destinationPath}", ex);
+                    result.SkippedMessages.Add($"移動に失敗しました: {Path.GetFileName(sourcePath)}");
+                }
+            }
+
+            if (movedItems.Count > 0)
+            {
+                moveHistoryActions.Push(new MoveHistoryAction(actionLabel, movedItems));
+                NormalizeCurrentIndex();
+
+                if (HasCurrentImage())
+                {
+                    DisplayCurrentImage();
+                }
+                else
+                {
+                    ClearDisplayedImage("画像がありません。");
+                }
+
+                SaveSettingSafe();
+            }
+            else
+            {
+                UpdateNavigationButtons();
+                RefreshImageBrowserIfOpen();
+            }
+
+            result.MovedCount = movedItems.Count;
+            result.ActionLabel = actionLabel;
+            UpdateUndoState();
+            return result;
+        }
+
+        /// <summary>
+        /// キューから指定画像を除外する
+        /// </summary>
+        private void RemoveImagePathFromQueue(string sourcePath)
+        {
+            int removeIndex = imagePaths.FindIndex(path => string.Equals(path, sourcePath, StringComparison.OrdinalIgnoreCase));
+            if (removeIndex < 0)
+            {
+                return;
+            }
+
+            imagePaths.RemoveAt(removeIndex);
+
+            if (removeIndex < currentImageIndex)
+            {
+                currentImageIndex--;
+            }
+            else if (removeIndex == currentImageIndex && currentImageIndex >= imagePaths.Count)
+            {
+                currentImageIndex = imagePaths.Count - 1;
+            }
+        }
+
+        /// <summary>
+        /// 現在インデックスを正規化する
+        /// </summary>
+        private void NormalizeCurrentIndex()
+        {
+            if (imagePaths.Count == 0)
+            {
+                currentImageIndex = -1;
+                return;
+            }
+
+            if (currentImageIndex < 0)
+            {
+                currentImageIndex = 0;
+            }
+            else if (currentImageIndex >= imagePaths.Count)
+            {
+                currentImageIndex = imagePaths.Count - 1;
+            }
+        }
+
+        /// <summary>
+        /// 表示用の移動先名を取得する
+        /// </summary>
+        private string GetDestinationLabel(TextBox destinationTextBox)
+        {
+            int destinationIndex = destinationTextBoxes.IndexOf(destinationTextBox);
+            if (destinationIndex < 0)
+            {
+                return "指定フォルダ";
+            }
+
+            string[] labels = { label2.Text, label3.Text, label4.Text, label5.Text, label6.Text, label7.Text, label8.Text, label9.Text, label10.Text, label11.Text };
+            return labels[destinationIndex];
+        }
+
+        /// <summary>
         /// パス入力欄にフォーカスがあるか
         /// </summary>
         private bool IsPathTextBoxFocused()
@@ -955,7 +1531,69 @@ namespace ImageMove
             normalizedPath = NormalizeDirectoryPath(rawPath);
             return !string.IsNullOrWhiteSpace(normalizedPath) && Directory.Exists(normalizedPath);
         }
+
+        /// <summary>
+        /// 相対パスを構築する
+        /// </summary>
+        private string BuildRelativePath(string sourceRoot, string fullPath)
+        {
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(sourceRoot) && Directory.Exists(sourceRoot))
+                {
+                    string normalizedRoot = Path.GetFullPath(sourceRoot);
+                    if (!normalizedRoot.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal))
+                    {
+                        normalizedRoot += Path.DirectorySeparatorChar;
+                    }
+
+                    Uri rootUri = new Uri(normalizedRoot);
+                    Uri pathUri = new Uri(Path.GetFullPath(fullPath));
+                    string relativePath = Uri.UnescapeDataString(rootUri.MakeRelativeUri(pathUri).ToString());
+                    return relativePath.Replace('/', Path.DirectorySeparatorChar);
+                }
+            }
+            catch
+            {
+                // 相対パス化に失敗した場合はフルパスを返す
+            }
+
+            return fullPath;
+        }
         #endregion 共通ユーティリティ
         #endregion メソッド
+    }
+
+    internal sealed class MoveHistoryAction
+    {
+        public MoveHistoryAction(string actionLabel, IEnumerable<MoveHistoryItem> items)
+        {
+            ActionLabel = actionLabel;
+            Items = items.ToList();
+        }
+
+        public string ActionLabel { get; }
+
+        public List<MoveHistoryItem> Items { get; }
+    }
+
+    internal sealed class MoveHistoryItem
+    {
+        public string SourcePath { get; set; }
+
+        public string DestinationPath { get; set; }
+
+        public int OriginalIndex { get; set; }
+    }
+
+    internal sealed class BatchMoveExecutionResult
+    {
+        public string ActionLabel { get; set; }
+
+        public int MovedCount { get; set; }
+
+        public List<string> MovedSourcePaths { get; } = new List<string>();
+
+        public List<string> SkippedMessages { get; } = new List<string>();
     }
 }
