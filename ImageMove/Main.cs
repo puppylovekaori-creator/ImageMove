@@ -19,6 +19,8 @@ namespace ImageMove
         private const int MinimumRestoreHeight = 700;
         private const int RepeatInitialDelayMs = 360;
         private const int RepeatIntervalMs = 90;
+        private const int DefaultRecentFolderHistoryLimit = 10;
+        private const int MaximumRecentFolderHistoryLimit = 50;
         private const int PrefetchAheadImageCount = 48;
         private const int PrefetchBehindImageCount = 12;
         private const int MaxCachedImageCount = 96;
@@ -35,7 +37,7 @@ namespace ImageMove
         private readonly string settingFileName = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "setting.xml");
 
         /// <summary> 移動先テキストボックス一覧 </summary>
-        private readonly List<TextBox> destinationTextBoxes;
+        private readonly List<ComboBox> destinationTextBoxes;
 
         /// <summary> 移動先へ即時移動するボタン一覧 </summary>
         private readonly List<Button> destinationMoveButtons;
@@ -97,6 +99,15 @@ namespace ImageMove
         /// <summary> 復元待ちの左右ペイン境界位置 </summary>
         private int pendingMainSplitterDistance;
 
+        /// <summary> 読込元フォルダ履歴 </summary>
+        private readonly List<string> recentSourceFolders = new List<string>();
+
+        /// <summary> 移動先フォルダ履歴 </summary>
+        private readonly List<string> recentDestinationFolders = new List<string>();
+
+        /// <summary> フォルダ履歴の最大保存件数 </summary>
+        private int recentFolderHistoryLimit = DefaultRecentFolderHistoryLimit;
+
         /// <summary> 画像キャッシュ用ロック </summary>
         private readonly object imageCacheSync = new object();
 
@@ -124,7 +135,7 @@ namespace ImageMove
         {
             InitializeComponent();
 
-            destinationTextBoxes = new List<TextBox>
+            destinationTextBoxes = new List<ComboBox>
             {
                 textBox2,
                 textBox3,
@@ -157,7 +168,7 @@ namespace ImageMove
         /// </summary>
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
-            if (IsPathTextBoxFocused())
+            if (IsPathComboBoxFocused())
             {
                 return base.ProcessCmdKey(ref msg, keyData);
             }
@@ -313,8 +324,18 @@ namespace ImageMove
         /// <summary>
         /// パス編集終了時に設定を保存する
         /// </summary>
-        private void PathTextBox_Leave(object sender, EventArgs e)
+        private void PathComboBox_Leave(object sender, EventArgs e)
         {
+            RememberFolderHistoryForControl(sender as ComboBox);
+            SaveSettingSafe();
+        }
+
+        /// <summary>
+        /// パス候補をプルダウンで選んだ時に履歴を更新する
+        /// </summary>
+        private void PathComboBox_SelectionChangeCommitted(object sender, EventArgs e)
+        {
+            RememberFolderHistoryForControl(sender as ComboBox);
             SaveSettingSafe();
         }
 
@@ -358,10 +379,13 @@ namespace ImageMove
             CreateDestinationMoveButtons();
             SyncOperationDestinationPaths();
 
-            foreach (var textBox in EnumeratePathTextBoxes())
+            foreach (var comboBox in EnumeratePathComboBoxes())
             {
-                textBox.ReadOnly = false;
-                textBox.Leave += PathTextBox_Leave;
+                comboBox.DropDownStyle = ComboBoxStyle.DropDown;
+                comboBox.AutoCompleteMode = AutoCompleteMode.SuggestAppend;
+                comboBox.AutoCompleteSource = AutoCompleteSource.ListItems;
+                comboBox.Leave += PathComboBox_Leave;
+                comboBox.SelectionChangeCommitted += PathComboBox_SelectionChangeCommitted;
             }
 
             foreach (var destinationTextBox in destinationTextBoxes)
@@ -372,6 +396,7 @@ namespace ImageMove
             mainSplitContainer.SplitterMoved += MainSplitContainer_SplitterMoved;
             Shown += Main_Shown;
             FormClosing += Main_FormClosing;
+            RefreshRecentFolderComboBoxItems();
             ClearDisplayedImage("画像がありません。");
             UpdateDestinationActionButtons();
             UpdateUndoState();
@@ -516,13 +541,16 @@ namespace ImageMove
             runToolStripMenuItem.DropDownItems.Add(skipNextToolStripMenuItem);
             runToolStripMenuItem.DropDownItems.Add(openImageListToolStripMenuItem);
 
+            var historySettingsToolStripMenuItem = new ToolStripMenuItem("フォルダ履歴設定", null, MenuFolderHistorySettings_Click);
+            fileToolStripMenuItem.DropDownItems.Insert(2, historySettingsToolStripMenuItem);
+
             menuStrip1.Items.Insert(1, editToolStripMenuItem);
         }
 
         /// <summary>
         /// パス入力欄を列挙する
         /// </summary>
-        private IEnumerable<TextBox> EnumeratePathTextBoxes()
+        private IEnumerable<ComboBox> EnumeratePathComboBoxes()
         {
             yield return textBox1;
 
@@ -530,6 +558,207 @@ namespace ImageMove
             {
                 yield return destinationTextBox;
             }
+        }
+
+        /// <summary>
+        /// 現在の入力値を履歴へ反映する
+        /// </summary>
+        private void RememberCurrentPathHistories()
+        {
+            RememberSourceDirectory(textBox1.Text, false);
+
+            foreach (ComboBox destinationTextBox in destinationTextBoxes)
+            {
+                RememberDestinationDirectory(destinationTextBox.Text, false);
+            }
+
+            RefreshRecentFolderComboBoxItems();
+        }
+
+        /// <summary>
+        /// 読込元の履歴へ追加する
+        /// </summary>
+        private void RememberSourceDirectory(string rawPath, bool refreshUi = true)
+        {
+            if (!TryGetExistingDirectory(rawPath, out string normalizedPath))
+            {
+                return;
+            }
+
+            UpdateRecentFolderHistory(recentSourceFolders, normalizedPath);
+            if (refreshUi)
+            {
+                RefreshRecentFolderComboBoxItems();
+            }
+        }
+
+        /// <summary>
+        /// 移動先の履歴へ追加する
+        /// </summary>
+        private void RememberDestinationDirectory(string rawPath, bool refreshUi = true)
+        {
+            if (!TryGetExistingDirectory(rawPath, out string normalizedPath))
+            {
+                return;
+            }
+
+            UpdateRecentFolderHistory(recentDestinationFolders, normalizedPath);
+            if (refreshUi)
+            {
+                RefreshRecentFolderComboBoxItems();
+            }
+        }
+
+        /// <summary>
+        /// パス入力欄に応じた履歴へ反映する
+        /// </summary>
+        private void RememberFolderHistoryForControl(ComboBox comboBox)
+        {
+            if (comboBox == null)
+            {
+                return;
+            }
+
+            if (ReferenceEquals(comboBox, textBox1))
+            {
+                RememberSourceDirectory(comboBox.Text);
+                return;
+            }
+
+            if (destinationTextBoxes.Contains(comboBox))
+            {
+                RememberDestinationDirectory(comboBox.Text);
+            }
+        }
+
+        /// <summary>
+        /// 履歴一覧へ新しいフォルダを先頭追加する
+        /// </summary>
+        private void UpdateRecentFolderHistory(List<string> targetHistory, string normalizedPath)
+        {
+            if (targetHistory == null || string.IsNullOrWhiteSpace(normalizedPath))
+            {
+                return;
+            }
+
+            targetHistory.RemoveAll(path => string.Equals(path, normalizedPath, StringComparison.OrdinalIgnoreCase));
+            targetHistory.Insert(0, normalizedPath);
+            TrimRecentFolderHistory(targetHistory);
+        }
+
+        /// <summary>
+        /// フォルダ履歴件数を上限内に丸める
+        /// </summary>
+        private int ClampRecentFolderHistoryLimit(int rawValue)
+        {
+            return Math.Max(1, Math.Min(rawValue <= 0 ? DefaultRecentFolderHistoryLimit : rawValue, MaximumRecentFolderHistoryLimit));
+        }
+
+        /// <summary>
+        /// 履歴上限を超えた分を削る
+        /// </summary>
+        private void TrimRecentFolderHistory(List<string> history)
+        {
+            int limit = ClampRecentFolderHistoryLimit(recentFolderHistoryLimit);
+            while (history.Count > limit)
+            {
+                history.RemoveAt(history.Count - 1);
+            }
+        }
+
+        /// <summary>
+        /// 読込元・移動先のプルダウン項目を更新する
+        /// </summary>
+        private void RefreshRecentFolderComboBoxItems()
+        {
+            RefreshComboBoxItems(textBox1, recentSourceFolders);
+
+            foreach (ComboBox destinationTextBox in destinationTextBoxes)
+            {
+                RefreshComboBoxItems(destinationTextBox, recentDestinationFolders);
+            }
+        }
+
+        /// <summary>
+        /// 1つのコンボボックスの候補一覧を更新する
+        /// </summary>
+        private void RefreshComboBoxItems(ComboBox comboBox, IReadOnlyCollection<string> history)
+        {
+            if (comboBox == null)
+            {
+                return;
+            }
+
+            string currentText = comboBox.Text;
+            int dropDownWidth = comboBox.Width;
+            comboBox.BeginUpdate();
+
+            try
+            {
+                comboBox.Items.Clear();
+                foreach (string path in history)
+                {
+                    comboBox.Items.Add(path);
+                    dropDownWidth = Math.Max(dropDownWidth, TextRenderer.MeasureText(path, comboBox.Font).Width + 40);
+                }
+
+                comboBox.MaxDropDownItems = Math.Min(ClampRecentFolderHistoryLimit(recentFolderHistoryLimit), 20);
+                comboBox.DropDownWidth = Math.Min(dropDownWidth, Screen.GetWorkingArea(this).Width - 80);
+                comboBox.Text = currentText;
+                comboBox.SelectionStart = comboBox.Text.Length;
+                comboBox.SelectionLength = 0;
+            }
+            finally
+            {
+                comboBox.EndUpdate();
+            }
+        }
+
+        /// <summary>
+        /// 保存設定から履歴一覧を復元する
+        /// </summary>
+        private void RestoreRecentFolderHistory(SaveSetting setting)
+        {
+            recentFolderHistoryLimit = ClampRecentFolderHistoryLimit(setting?.RecentFolderHistoryLimit ?? DefaultRecentFolderHistoryLimit);
+            recentSourceFolders.Clear();
+            recentDestinationFolders.Clear();
+
+            if (setting?.RecentSourceFolders != null)
+            {
+                foreach (string path in setting.RecentSourceFolders.AsEnumerable().Reverse())
+                {
+                    if (!string.IsNullOrWhiteSpace(path))
+                    {
+                        UpdateRecentFolderHistory(recentSourceFolders, NormalizeDirectoryPath(path));
+                    }
+                }
+            }
+
+            if (setting?.RecentDestinationFolders != null)
+            {
+                foreach (string path in setting.RecentDestinationFolders.AsEnumerable().Reverse())
+                {
+                    if (!string.IsNullOrWhiteSpace(path))
+                    {
+                        UpdateRecentFolderHistory(recentDestinationFolders, NormalizeDirectoryPath(path));
+                    }
+                }
+            }
+
+            if (recentSourceFolders.Count == 0)
+            {
+                RememberSourceDirectory(textBox1.Text, false);
+            }
+
+            if (recentDestinationFolders.Count == 0)
+            {
+                foreach (ComboBox destinationTextBox in destinationTextBoxes)
+                {
+                    RememberDestinationDirectory(destinationTextBox.Text, false);
+                }
+            }
+
+            RefreshRecentFolderComboBoxItems();
         }
 
         /// <summary>
@@ -627,7 +856,7 @@ namespace ImageMove
                 for (int index = 0; index < destinationTextBoxes.Count; index++)
                 {
                     int destinationIndex = index;
-                    TextBox destinationTextBox = destinationTextBoxes[destinationIndex];
+                    ComboBox destinationTextBox = destinationTextBoxes[destinationIndex];
                     var moveButton = new Button
                     {
                         Name = "destinationMoveButton" + index,
@@ -709,6 +938,7 @@ namespace ImageMove
 
                 imagePaths = CollectImagePaths(sourceDirectory);
                 currentImageIndex = ResolveReloadIndex(previousImagePath, previousIndex);
+                RememberSourceDirectory(sourceDirectory);
 
                 if (!HasCurrentImage())
                 {
@@ -971,7 +1201,7 @@ namespace ImageMove
         /// <summary>
         /// 現在の画像を指定先へ移動する
         /// </summary>
-        private void MoveCurrentImage(TextBox destinationTextBox)
+        private void MoveCurrentImage(ComboBox destinationTextBox)
         {
             try
             {
@@ -1009,7 +1239,7 @@ namespace ImageMove
         /// <summary>
         /// Explorer 風のフォルダ選択ダイアログを表示する
         /// </summary>
-        private void BrowseForFolder(TextBox targetTextBox)
+        private void BrowseForFolder(ComboBox targetTextBox)
         {
             try
             {
@@ -1021,6 +1251,7 @@ namespace ImageMove
                     if (dialog.ShowDialog(Handle))
                     {
                         targetTextBox.Text = dialog.SelectedPath;
+                        RememberFolderHistoryForControl(targetTextBox);
                         SaveSettingSafe();
                     }
                 }
@@ -1035,7 +1266,7 @@ namespace ImageMove
         /// <summary>
         /// ダイアログの初期表示フォルダを決定する
         /// </summary>
-        private string ResolveInitialDirectory(TextBox targetTextBox)
+        private string ResolveInitialDirectory(ComboBox targetTextBox)
         {
             if (TryGetExistingDirectory(targetTextBox.Text, out string currentPath))
             {
@@ -1398,6 +1629,7 @@ namespace ImageMove
         /// </summary>
         private void SaveSetting()
         {
+            RememberCurrentPathHistories();
             Rectangle windowBounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
             var setting = new SaveSetting
             {
@@ -1417,7 +1649,10 @@ namespace ImageMove
                   WindowWidth = windowBounds.Width,
                   WindowHeight = windowBounds.Height,
                   WindowState = WindowState.ToString(),
-                  MainSplitterDistance = mainSplitContainer.SplitterDistance
+                  MainSplitterDistance = mainSplitContainer.SplitterDistance,
+                  RecentFolderHistoryLimit = ClampRecentFolderHistoryLimit(recentFolderHistoryLimit),
+                  RecentSourceFolders = recentSourceFolders.ToList(),
+                  RecentDestinationFolders = recentDestinationFolders.ToList()
               };
 
             var serializer = new XmlSerializer(typeof(SaveSetting));
@@ -1449,6 +1684,7 @@ namespace ImageMove
                   textBox9.Text = NormalizeDirectoryPath(setting.Num7);
                   textBox10.Text = NormalizeDirectoryPath(setting.Num8);
                   textBox11.Text = NormalizeDirectoryPath(setting.Num9);
+                  RestoreRecentFolderHistory(setting);
                   ApplySavedWindowBounds(setting);
                   pendingMainSplitterDistance = setting.MainSplitterDistance;
                   ApplySavedMainSplitterDistance();
@@ -1493,6 +1729,72 @@ namespace ImageMove
             {
                 logger.Error("設定読み込みに失敗しました。", ex);
                 MessageBox.Show("設定読み込みに失敗しました。", AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        /// <summary>
+        /// メニューから履歴件数設定を開く
+        /// </summary>
+        private void MenuFolderHistorySettings_Click(object sender, EventArgs e)
+        {
+            using (var dialog = new Form())
+            using (var limitLabel = new Label())
+            using (var numericUpDown = new NumericUpDown())
+            using (var noteLabel = new Label())
+            using (var okButton = new Button())
+            using (var cancelButton = new Button())
+            {
+                dialog.Text = "フォルダ履歴設定";
+                dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+                dialog.StartPosition = FormStartPosition.CenterParent;
+                dialog.MinimizeBox = false;
+                dialog.MaximizeBox = false;
+                dialog.ClientSize = new Size(420, 190);
+                dialog.ShowInTaskbar = false;
+
+                limitLabel.AutoSize = true;
+                limitLabel.Location = new Point(24, 28);
+                limitLabel.Text = "履歴に残す件数";
+
+                numericUpDown.Location = new Point(170, 24);
+                numericUpDown.Minimum = 1;
+                numericUpDown.Maximum = MaximumRecentFolderHistoryLimit;
+                numericUpDown.Value = ClampRecentFolderHistoryLimit(recentFolderHistoryLimit);
+                numericUpDown.Size = new Size(90, 31);
+
+                noteLabel.AutoSize = false;
+                noteLabel.Location = new Point(24, 72);
+                noteLabel.Size = new Size(360, 52);
+                noteLabel.Text = "読込元と移動先のプルダウン候補を、この件数まで保存します。初期値は10件です。";
+
+                okButton.Text = "保存";
+                okButton.DialogResult = DialogResult.OK;
+                okButton.Location = new Point(204, 136);
+                okButton.Size = new Size(84, 34);
+
+                cancelButton.Text = "キャンセル";
+                cancelButton.DialogResult = DialogResult.Cancel;
+                cancelButton.Location = new Point(300, 136);
+                cancelButton.Size = new Size(84, 34);
+
+                dialog.AcceptButton = okButton;
+                dialog.CancelButton = cancelButton;
+                dialog.Controls.Add(limitLabel);
+                dialog.Controls.Add(numericUpDown);
+                dialog.Controls.Add(noteLabel);
+                dialog.Controls.Add(okButton);
+                dialog.Controls.Add(cancelButton);
+
+                if (dialog.ShowDialog(this) != DialogResult.OK)
+                {
+                    return;
+                }
+
+                recentFolderHistoryLimit = ClampRecentFolderHistoryLimit((int)numericUpDown.Value);
+                TrimRecentFolderHistory(recentSourceFolders);
+                TrimRecentFolderHistory(recentDestinationFolders);
+                RefreshRecentFolderComboBoxItems();
+                SaveSettingSafe();
             }
         }
         #endregion 設定保存・復元
@@ -1598,6 +1900,7 @@ namespace ImageMove
                 return result;
             }
 
+            RememberDestinationDirectory(normalizedDestinationDirectory);
             var movedItems = new List<MoveHistoryItem>();
             progressCallback?.Invoke(new BatchMoveProgressInfo(totalCount, 0, 0, 0, "一括移動を開始しました。", string.Empty));
 
@@ -1739,7 +2042,7 @@ namespace ImageMove
         /// <summary>
         /// 表示用の移動先名を取得する
         /// </summary>
-        private string GetDestinationLabel(TextBox destinationTextBox)
+        private string GetDestinationLabel(ComboBox destinationTextBox)
         {
             int destinationIndex = destinationTextBoxes.IndexOf(destinationTextBox);
             if (destinationIndex < 0)
@@ -1754,9 +2057,9 @@ namespace ImageMove
         /// <summary>
         /// パス入力欄にフォーカスがあるか
         /// </summary>
-        private bool IsPathTextBoxFocused()
+        private bool IsPathComboBoxFocused()
         {
-            return EnumeratePathTextBoxes().Any(textBox => textBox.Focused);
+            return EnumeratePathComboBoxes().Any(comboBox => comboBox.Focused);
         }
         #endregion ショートカット
 

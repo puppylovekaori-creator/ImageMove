@@ -130,6 +130,9 @@ $mainForm.Show()
 $browserForm = $null
 $mixedRoot = $null
 $prefetchRoot = $null
+$historyRoot = $null
+$historySettingDir = $null
+$historyReloadForm = $null
 $syntheticRoot = $null
 
 try {
@@ -196,6 +199,70 @@ try {
     Wait-Until -TimeoutMs 10000 -Condition { $cacheEntries.Count -ge 8 }
     Write-Host ("RESULT1B: cache={0} next_ms={1}" -f $cacheEntries.Count, $nextStopwatch.ElapsedMilliseconds)
 
+    Write-Host 'TEST1C: folder history combo and save/load'
+    $historyRoot = New-TempDirectory -Prefix 'ImageMoveHistory'
+    $historySettingDir = New-TempDirectory -Prefix 'ImageMoveHistorySetting'
+    $historySettingPath = Join-Path $historySettingDir 'setting.xml'
+    $sourceHistoryDirs = 1..7 | ForEach-Object {
+        $dir = Join-Path $historyRoot ("source_" + $_.ToString('00'))
+        [System.IO.Directory]::CreateDirectory($dir) | Out-Null
+        $dir
+    }
+    $destinationHistoryDirs = 1..8 | ForEach-Object {
+        $dir = Join-Path $historyRoot ("destination_" + $_.ToString('00'))
+        [System.IO.Directory]::CreateDirectory($dir) | Out-Null
+        $dir
+    }
+
+    $sourceCombo = Get-PrivateFieldValue -Target $mainForm -FieldName 'textBox1'
+    $destinationCombo = Get-PrivateFieldValue -Target $mainForm -FieldName 'textBox2'
+    if ($sourceCombo.GetType().FullName -ne 'System.Windows.Forms.ComboBox' -or $destinationCombo.GetType().FullName -ne 'System.Windows.Forms.ComboBox') {
+        throw 'Path controls are not ComboBox.'
+    }
+
+    Set-PrivateFieldValue -Target $mainForm -FieldName 'settingFileName' -Value $historySettingPath
+    Set-PrivateFieldValue -Target $mainForm -FieldName 'recentFolderHistoryLimit' -Value 5
+    $rememberSourceMethod = $mainForm.GetType().GetMethod('RememberSourceDirectory', [System.Reflection.BindingFlags]'Instance, NonPublic')
+    $rememberDestinationMethod = $mainForm.GetType().GetMethod('RememberDestinationDirectory', [System.Reflection.BindingFlags]'Instance, NonPublic')
+    if ($null -eq $rememberSourceMethod -or $null -eq $rememberDestinationMethod) {
+        throw 'Recent folder history methods were not found.'
+    }
+
+    foreach ($dir in $sourceHistoryDirs) {
+        $rememberSourceMethod.Invoke($mainForm, @([string]$dir, $true)) | Out-Null
+    }
+
+    foreach ($dir in $destinationHistoryDirs) {
+        $rememberDestinationMethod.Invoke($mainForm, @([string]$dir, $true)) | Out-Null
+    }
+
+    $sourceCombo.Text = $sourceHistoryDirs[-1]
+    $destinationCombo.Text = $destinationHistoryDirs[-1]
+    Invoke-PrivateMethod -Target $mainForm -MethodName 'SaveSetting' | Out-Null
+
+    $historyReloadForm = New-Object ImageMove.Main
+    $historyReloadForm.Show()
+    [System.Windows.Forms.Application]::DoEvents()
+    Set-PrivateFieldValue -Target $historyReloadForm -FieldName 'settingFileName' -Value $historySettingPath
+    Invoke-PrivateMethod -Target $historyReloadForm -MethodName 'LoadSetting' | Out-Null
+
+    $reloadedSourceCombo = Get-PrivateFieldValue -Target $historyReloadForm -FieldName 'textBox1'
+    $reloadedDestinationCombo = Get-PrivateFieldValue -Target $historyReloadForm -FieldName 'textBox2'
+    $reloadedLimit = [int](Get-PrivateFieldValue -Target $historyReloadForm -FieldName 'recentFolderHistoryLimit')
+    if ($reloadedLimit -ne 5) {
+        throw "Expected recent folder history limit 5, actual=$reloadedLimit"
+    }
+
+    if ($reloadedSourceCombo.Items.Count -ne 5 -or $reloadedDestinationCombo.Items.Count -ne 5) {
+        throw "Unexpected history item counts: source=$($reloadedSourceCombo.Items.Count) destination=$($reloadedDestinationCombo.Items.Count)"
+    }
+
+    if ($reloadedSourceCombo.Items[0] -ne $sourceHistoryDirs[-1] -or $reloadedDestinationCombo.Items[0] -ne $destinationHistoryDirs[-1]) {
+        throw 'Recent folder history order was not preserved.'
+    }
+
+    Write-Host ("RESULT1C: source_items={0} destination_items={1} limit={2}" -f $reloadedSourceCombo.Items.Count, $reloadedDestinationCombo.Items.Count, $reloadedLimit)
+
     Write-Host "TEST2: virtual browser with $SyntheticImageCount synthetic image paths"
     $syntheticRoot = New-TempDirectory -Prefix 'ImageMoveSyntheticBrowser'
     $sourceTextBox.Text = $syntheticRoot
@@ -256,12 +323,17 @@ finally {
         $browserForm.Dispose()
     }
 
+    if ($historyReloadForm -ne $null -and -not $historyReloadForm.IsDisposed) {
+        $historyReloadForm.Close()
+        $historyReloadForm.Dispose()
+    }
+
     if ($mainForm -ne $null -and -not $mainForm.IsDisposed) {
         $mainForm.Close()
         $mainForm.Dispose()
     }
 
-    foreach ($path in @($mixedRoot, $prefetchRoot, $syntheticRoot)) {
+    foreach ($path in @($mixedRoot, $prefetchRoot, $historyRoot, $historySettingDir, $syntheticRoot)) {
         if (-not [string]::IsNullOrWhiteSpace($path) -and (Test-Path $path)) {
             Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
         }

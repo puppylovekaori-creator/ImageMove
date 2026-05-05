@@ -45,5 +45,11 @@ namespace ImageMove
         public string WindowState;
         /// <summary> 左右ペインの境界位置 </summary>
         public int MainSplitterDistance;
+        /// <summary> 読込元の最近使ったフォルダ </summary>
+        public List<string> RecentSourceFolders = new List<string>();
+        /// <summary> 移動先の最近使ったフォルダ </summary>
+        public List<string> RecentDestinationFolders = new List<string>();
+        /// <summary> フォルダ履歴の保存件数 </summary>
+        public int RecentFolderHistoryLimit = 10;
     }
 }
