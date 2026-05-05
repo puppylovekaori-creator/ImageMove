@@ -43,5 +43,7 @@ namespace ImageMove
         public int WindowHeight;
         /// <summary> 画面状態 </summary>
         public string WindowState;
+        /// <summary> 左右ペインの境界位置 </summary>
+        public int MainSplitterDistance;
     }
 }

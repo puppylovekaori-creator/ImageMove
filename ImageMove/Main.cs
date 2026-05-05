@@ -16,6 +16,8 @@ namespace ImageMove
         private const string AppDisplayName = "ImageMove";
         private const int MinimumRestoreWidth = 960;
         private const int MinimumRestoreHeight = 700;
+        private const int RepeatInitialDelayMs = 360;
+        private const int RepeatIntervalMs = 90;
 
         #region フィールド
         /// <summary> ロガー </summary>
@@ -68,6 +70,27 @@ namespace ImageMove
 
         /// <summary> 移動せず次へメニュー </summary>
         private ToolStripMenuItem skipNextToolStripMenuItem;
+
+        /// <summary> 押しっぱなし連続処理対象ボタン一覧 </summary>
+        private readonly Dictionary<Button, Action> repeatButtonActions = new Dictionary<Button, Action>();
+
+        /// <summary> 押しっぱなし連続処理タイマー </summary>
+        private readonly Timer repeatActionTimer;
+
+        /// <summary> 現在押しっぱなし中のボタン </summary>
+        private Button activeRepeatButton;
+
+        /// <summary> 現在押しっぱなし中の処理 </summary>
+        private Action activeRepeatAction;
+
+        /// <summary> 押しっぱなしで既に連続処理が始まったか </summary>
+        private bool repeatActionTriggered;
+
+        /// <summary> MouseUp 後に通常 Click を無視するボタン </summary>
+        private Button suppressNextClickButton;
+
+        /// <summary> 復元待ちの左右ペイン境界位置 </summary>
+        private int pendingMainSplitterDistance;
         #endregion フィールド
 
         #region コンストラクタ
@@ -94,6 +117,11 @@ namespace ImageMove
 
             destinationMoveButtons = new List<Button>();
             operationDestinationPreviewTextBoxes = new List<TextBox>();
+            repeatActionTimer = new Timer
+            {
+                Interval = RepeatInitialDelayMs
+            };
+            repeatActionTimer.Tick += RepeatActionTimer_Tick;
 
             InitializeUi();
             LoadSettingIfExists();
@@ -202,6 +230,11 @@ namespace ImageMove
         /// </summary>
         private void button3_Click(object sender, EventArgs e)
         {
+            if (ConsumeRepeatClick(sender))
+            {
+                return;
+            }
+
             ShowPreviousImage();
         }
         #endregion 前の画像ボタン押下
@@ -212,6 +245,11 @@ namespace ImageMove
         /// </summary>
         private void button4_Click(object sender, EventArgs e)
         {
+            if (ConsumeRepeatClick(sender))
+            {
+                return;
+            }
+
             ShowNextImage();
         }
         #endregion 次の画像ボタン押下
@@ -271,6 +309,7 @@ namespace ImageMove
         /// </summary>
         private void Main_FormClosing(object sender, FormClosingEventArgs e)
         {
+            StopRepeatAction();
             SaveSettingSafe();
         }
         #endregion イベント
@@ -305,6 +344,8 @@ namespace ImageMove
                 destinationTextBox.TextChanged += DestinationTextBox_TextChanged;
             }
 
+            mainSplitContainer.SplitterMoved += MainSplitContainer_SplitterMoved;
+            Shown += Main_Shown;
             FormClosing += Main_FormClosing;
             ClearDisplayedImage("画像がありません。");
             UpdateDestinationActionButtons();
@@ -398,6 +439,8 @@ namespace ImageMove
                 button3.Width = 130;
                 button4.Width = 130;
                 button5.Width = 110;
+                RegisterRepeatButton(button3, ShowPreviousImage);
+                RegisterRepeatButton(button4, ShowNextImage);
 
                 undoButton = new Button
                 {
@@ -492,10 +535,11 @@ namespace ImageMove
 
                 for (int index = 0; index < destinationTextBoxes.Count; index++)
                 {
+                    int destinationIndex = index;
                     var label = new Label
                     {
                         Dock = DockStyle.Fill,
-                        Text = labels[index],
+                        Text = labels[destinationIndex],
                         TextAlign = ContentAlignment.MiddleLeft,
                         Margin = new Padding(3)
                     };
@@ -506,10 +550,11 @@ namespace ImageMove
                         Text = "移動",
                         Dock = DockStyle.Fill,
                         Margin = new Padding(3),
-                        Tag = index,
+                        Tag = destinationIndex,
                         UseVisualStyleBackColor = true
                     };
                     moveButton.Click += DestinationMoveButton_Click;
+                    RegisterRepeatButton(moveButton, () => MoveCurrentImage(destinationTextBoxes[destinationIndex]));
 
                     var pathTextBox = new TextBox
                     {
@@ -530,10 +575,10 @@ namespace ImageMove
                     };
                     browseButton.Click += OperationDestinationBrowseButton_Click;
 
-                    operationDestinationPanel.Controls.Add(label, 0, index);
-                    operationDestinationPanel.Controls.Add(moveButton, 1, index);
-                    operationDestinationPanel.Controls.Add(pathTextBox, 2, index);
-                    operationDestinationPanel.Controls.Add(browseButton, 3, index);
+                    operationDestinationPanel.Controls.Add(label, 0, destinationIndex);
+                    operationDestinationPanel.Controls.Add(moveButton, 1, destinationIndex);
+                    operationDestinationPanel.Controls.Add(pathTextBox, 2, destinationIndex);
+                    operationDestinationPanel.Controls.Add(browseButton, 3, destinationIndex);
 
                     destinationMoveButtons.Add(moveButton);
                     operationDestinationPreviewTextBoxes.Add(pathTextBox);
@@ -556,7 +601,8 @@ namespace ImageMove
             {
                 for (int index = 0; index < destinationTextBoxes.Count; index++)
                 {
-                    TextBox destinationTextBox = destinationTextBoxes[index];
+                    int destinationIndex = index;
+                    TextBox destinationTextBox = destinationTextBoxes[destinationIndex];
                     var moveButton = new Button
                     {
                         Name = "destinationMoveButton" + index,
@@ -564,14 +610,15 @@ namespace ImageMove
                         Dock = DockStyle.Fill,
                         AutoSize = true,
                         Margin = new Padding(6, 3, 6, 3),
-                        Tag = index,
+                        Tag = destinationIndex,
                         TabIndex = destinationTextBox.TabIndex,
                         UseVisualStyleBackColor = true
                     };
 
                     moveButton.Click += DestinationMoveButton_Click;
+                    RegisterRepeatButton(moveButton, () => MoveCurrentImage(destinationTextBoxes[destinationIndex]));
 
-                    destinationLayoutPanel.Controls.Add(moveButton, 3, index);
+                    destinationLayoutPanel.Controls.Add(moveButton, 3, destinationIndex);
                     destinationMoveButtons.Add(moveButton);
                 }
             }
@@ -971,6 +1018,11 @@ namespace ImageMove
         /// </summary>
         private void DestinationMoveButton_Click(object sender, EventArgs e)
         {
+            if (ConsumeRepeatClick(sender))
+            {
+                return;
+            }
+
             if (!(sender is Button moveButton) || moveButton.Tag == null)
             {
                 return;
@@ -1319,14 +1371,15 @@ namespace ImageMove
                 Num5 = NormalizeDirectoryPath(textBox7.Text),
                 Num6 = NormalizeDirectoryPath(textBox8.Text),
                 Num7 = NormalizeDirectoryPath(textBox9.Text),
-                Num8 = NormalizeDirectoryPath(textBox10.Text),
-                Num9 = NormalizeDirectoryPath(textBox11.Text),
-                WindowLeft = windowBounds.Left,
-                WindowTop = windowBounds.Top,
-                WindowWidth = windowBounds.Width,
-                WindowHeight = windowBounds.Height,
-                WindowState = WindowState.ToString()
-            };
+                  Num8 = NormalizeDirectoryPath(textBox10.Text),
+                  Num9 = NormalizeDirectoryPath(textBox11.Text),
+                  WindowLeft = windowBounds.Left,
+                  WindowTop = windowBounds.Top,
+                  WindowWidth = windowBounds.Width,
+                  WindowHeight = windowBounds.Height,
+                  WindowState = WindowState.ToString(),
+                  MainSplitterDistance = mainSplitContainer.SplitterDistance
+              };
 
             var serializer = new XmlSerializer(typeof(SaveSetting));
             using (var streamWriter = new StreamWriter(settingFileName, false, new UTF8Encoding(false)))
@@ -1354,12 +1407,14 @@ namespace ImageMove
                 textBox6.Text = NormalizeDirectoryPath(setting.Num4);
                 textBox7.Text = NormalizeDirectoryPath(setting.Num5);
                 textBox8.Text = NormalizeDirectoryPath(setting.Num6);
-                textBox9.Text = NormalizeDirectoryPath(setting.Num7);
-                textBox10.Text = NormalizeDirectoryPath(setting.Num8);
-                textBox11.Text = NormalizeDirectoryPath(setting.Num9);
-                ApplySavedWindowBounds(setting);
-            }
-        }
+                  textBox9.Text = NormalizeDirectoryPath(setting.Num7);
+                  textBox10.Text = NormalizeDirectoryPath(setting.Num8);
+                  textBox11.Text = NormalizeDirectoryPath(setting.Num9);
+                  ApplySavedWindowBounds(setting);
+                  pendingMainSplitterDistance = setting.MainSplitterDistance;
+                  ApplySavedMainSplitterDistance();
+              }
+          }
 
         /// <summary>
         /// メニューから設定保存
@@ -1750,6 +1805,147 @@ namespace ImageMove
             {
                 WindowState = FormWindowState.Maximized;
             }
+        }
+
+        /// <summary>
+        /// 前回保存した左右ペイン境界位置を適用する
+        /// </summary>
+        private void ApplySavedMainSplitterDistance()
+        {
+            if (pendingMainSplitterDistance <= 0)
+            {
+                return;
+            }
+
+            int minimum = Math.Max(mainSplitContainer.Panel1MinSize, 220);
+            int maximum = mainSplitContainer.Width - mainSplitContainer.Panel2MinSize - mainSplitContainer.SplitterWidth - 24;
+            if (maximum < minimum)
+            {
+                return;
+            }
+
+            mainSplitContainer.SplitterDistance = Math.Max(minimum, Math.Min(pendingMainSplitterDistance, maximum));
+            pendingMainSplitterDistance = 0;
+        }
+
+        /// <summary>
+        /// 初回表示後に保存済みペイン位置を再適用する
+        /// </summary>
+        private void Main_Shown(object sender, EventArgs e)
+        {
+            ApplySavedMainSplitterDistance();
+        }
+
+        /// <summary>
+        /// 左右ペイン境界移動後に設定を保存する
+        /// </summary>
+        private void MainSplitContainer_SplitterMoved(object sender, SplitterEventArgs e)
+        {
+            SaveSettingSafe();
+        }
+
+        /// <summary>
+        /// 押しっぱなし対象ボタンを登録する
+        /// </summary>
+        private void RegisterRepeatButton(Button button, Action action)
+        {
+            if (button == null || action == null)
+            {
+                return;
+            }
+
+            repeatButtonActions[button] = action;
+            button.MouseDown -= RepeatableButton_MouseDown;
+            button.MouseUp -= RepeatableButton_MouseUp;
+            button.MouseCaptureChanged -= RepeatableButton_MouseCaptureChanged;
+            button.MouseDown += RepeatableButton_MouseDown;
+            button.MouseUp += RepeatableButton_MouseUp;
+            button.MouseCaptureChanged += RepeatableButton_MouseCaptureChanged;
+        }
+
+        /// <summary>
+        /// 押しっぱなし対象ボタン MouseDown
+        /// </summary>
+        private void RepeatableButton_MouseDown(object sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left || !(sender is Button button) || !button.Enabled || !repeatButtonActions.TryGetValue(button, out Action action))
+            {
+                return;
+            }
+
+            suppressNextClickButton = null;
+            repeatActionTriggered = false;
+            activeRepeatButton = button;
+            activeRepeatAction = action;
+            repeatActionTimer.Interval = RepeatInitialDelayMs;
+            repeatActionTimer.Start();
+        }
+
+        /// <summary>
+        /// 押しっぱなし対象ボタン MouseUp
+        /// </summary>
+        private void RepeatableButton_MouseUp(object sender, MouseEventArgs e)
+        {
+            StopRepeatAction();
+        }
+
+        /// <summary>
+        /// 押しっぱなし対象ボタンのキャプチャ解除
+        /// </summary>
+        private void RepeatableButton_MouseCaptureChanged(object sender, EventArgs e)
+        {
+            if (sender is Button button && ReferenceEquals(button, activeRepeatButton) && !button.Capture)
+            {
+                StopRepeatAction();
+            }
+        }
+
+        /// <summary>
+        /// 押しっぱなし連続処理タイマー
+        /// </summary>
+        private void RepeatActionTimer_Tick(object sender, EventArgs e)
+        {
+            if (activeRepeatButton == null || activeRepeatAction == null || !activeRepeatButton.Enabled)
+            {
+                StopRepeatAction();
+                return;
+            }
+
+            suppressNextClickButton = activeRepeatButton;
+            repeatActionTriggered = true;
+            activeRepeatAction();
+            repeatActionTimer.Interval = RepeatIntervalMs;
+        }
+
+        /// <summary>
+        /// 押しっぱなし連続処理を停止する
+        /// </summary>
+        private void StopRepeatAction()
+        {
+            repeatActionTimer.Stop();
+
+            if (repeatActionTriggered && activeRepeatButton != null)
+            {
+                suppressNextClickButton = activeRepeatButton;
+            }
+
+            activeRepeatButton = null;
+            activeRepeatAction = null;
+            repeatActionTriggered = false;
+        }
+
+        /// <summary>
+        /// 押しっぱなし後の通常 Click を一度だけ無視する
+        /// </summary>
+        private bool ConsumeRepeatClick(object sender)
+        {
+            if (sender is Button button && ReferenceEquals(button, suppressNextClickButton))
+            {
+                suppressNextClickButton = null;
+                return true;
+            }
+
+            return false;
         }
 
         /// <summary>
