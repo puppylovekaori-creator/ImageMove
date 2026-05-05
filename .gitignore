@@ -2,5 +2,7 @@
 ImageMove/bin/
 ImageMove/obj/
 ImageMove/setting.xml
+release/
+ImageMove Release.lnk
 *.user
 *.suo
