@@ -33,6 +33,9 @@ namespace ImageMove
         /// <summary> 移動先へ即時移動するボタン一覧 </summary>
         private readonly List<Button> destinationMoveButtons;
 
+        /// <summary> 操作タブ側の移動先表示欄一覧 </summary>
+        private readonly List<TextBox> operationDestinationPreviewTextBoxes;
+
         /// <summary> 画像ファイルパスのリスト </summary>
         private List<string> imagePaths = new List<string>();
 
@@ -90,6 +93,7 @@ namespace ImageMove
             };
 
             destinationMoveButtons = new List<Button>();
+            operationDestinationPreviewTextBoxes = new List<TextBox>();
 
             InitializeUi();
             LoadSettingIfExists();
@@ -258,6 +262,7 @@ namespace ImageMove
         /// </summary>
         private void DestinationTextBox_TextChanged(object sender, EventArgs e)
         {
+            SyncOperationDestinationPaths();
             UpdateDestinationActionButtons();
         }
 
@@ -285,7 +290,9 @@ namespace ImageMove
             ConfigurePreviewPanel();
             ConfigureNavigationPanel();
             ConfigureAdditionalMenus();
+            CreateOperationDestinationRows();
             CreateDestinationMoveButtons();
+            SyncOperationDestinationPaths();
 
             foreach (var textBox in EnumeratePathTextBoxes())
             {
@@ -458,6 +465,87 @@ namespace ImageMove
         }
 
         /// <summary>
+        /// 操作タブに移動先の一覧を作成する
+        /// </summary>
+        private void CreateOperationDestinationRows()
+        {
+            operationDestinationPanel.SuspendLayout();
+
+            try
+            {
+                operationDestinationPanel.Controls.Clear();
+                operationDestinationPreviewTextBoxes.Clear();
+
+                string[] labels =
+                {
+                    label2.Text,
+                    label3.Text,
+                    label4.Text,
+                    label5.Text,
+                    label6.Text,
+                    label7.Text,
+                    label8.Text,
+                    label9.Text,
+                    label10.Text,
+                    label11.Text
+                };
+
+                for (int index = 0; index < destinationTextBoxes.Count; index++)
+                {
+                    var label = new Label
+                    {
+                        Dock = DockStyle.Fill,
+                        Text = labels[index],
+                        TextAlign = ContentAlignment.MiddleLeft,
+                        Margin = new Padding(3)
+                    };
+
+                    var moveButton = new Button
+                    {
+                        Name = "operationMoveButton" + index,
+                        Text = "移動",
+                        Dock = DockStyle.Fill,
+                        Margin = new Padding(3),
+                        Tag = index,
+                        UseVisualStyleBackColor = true
+                    };
+                    moveButton.Click += DestinationMoveButton_Click;
+
+                    var pathTextBox = new TextBox
+                    {
+                        Name = "operationDestinationPreviewTextBox" + index,
+                        Dock = DockStyle.Fill,
+                        ReadOnly = true,
+                        Margin = new Padding(3)
+                    };
+
+                    var browseButton = new Button
+                    {
+                        Name = "operationBrowseButton" + index,
+                        Text = "参照",
+                        Dock = DockStyle.Fill,
+                        Margin = new Padding(3),
+                        Tag = index,
+                        UseVisualStyleBackColor = true
+                    };
+                    browseButton.Click += OperationDestinationBrowseButton_Click;
+
+                    operationDestinationPanel.Controls.Add(label, 0, index);
+                    operationDestinationPanel.Controls.Add(moveButton, 1, index);
+                    operationDestinationPanel.Controls.Add(pathTextBox, 2, index);
+                    operationDestinationPanel.Controls.Add(browseButton, 3, index);
+
+                    destinationMoveButtons.Add(moveButton);
+                    operationDestinationPreviewTextBoxes.Add(pathTextBox);
+                }
+            }
+            finally
+            {
+                operationDestinationPanel.ResumeLayout(false);
+            }
+        }
+
+        /// <summary>
         /// 各移動先テキスト欄の左に即時移動ボタンを作成する
         /// </summary>
         private void CreateDestinationMoveButtons()
@@ -491,6 +579,37 @@ namespace ImageMove
             {
                 destinationLayoutPanel.ResumeLayout(false);
             }
+        }
+
+        /// <summary>
+        /// 操作タブ側の移動先表示を同期する
+        /// </summary>
+        private void SyncOperationDestinationPaths()
+        {
+            int count = Math.Min(operationDestinationPreviewTextBoxes.Count, destinationTextBoxes.Count);
+            for (int index = 0; index < count; index++)
+            {
+                operationDestinationPreviewTextBoxes[index].Text = NormalizeDirectoryPath(destinationTextBoxes[index].Text);
+            }
+        }
+
+        /// <summary>
+        /// 操作タブ側の参照ボタン押下
+        /// </summary>
+        private void OperationDestinationBrowseButton_Click(object sender, EventArgs e)
+        {
+            if (!(sender is Button browseButton) || browseButton.Tag == null)
+            {
+                return;
+            }
+
+            int destinationIndex = Convert.ToInt32(browseButton.Tag);
+            if (destinationIndex < 0 || destinationIndex >= destinationTextBoxes.Count)
+            {
+                return;
+            }
+
+            BrowseForFolder(destinationTextBoxes[destinationIndex]);
         }
         #endregion 初期化
 
@@ -878,10 +997,14 @@ namespace ImageMove
 
             bool hasCurrentImage = HasCurrentImage();
 
-            for (int index = 0; index < destinationMoveButtons.Count; index++)
+            foreach (Button moveButton in destinationMoveButtons)
             {
-                bool hasDestinationDirectory = TryGetExistingDirectory(destinationTextBoxes[index].Text, out _);
-                destinationMoveButtons[index].Enabled = hasCurrentImage && hasDestinationDirectory;
+                int destinationIndex = moveButton.Tag is int tagValue ? tagValue : Convert.ToInt32(moveButton.Tag);
+                bool hasDestinationDirectory =
+                    destinationIndex >= 0 &&
+                    destinationIndex < destinationTextBoxes.Count &&
+                    TryGetExistingDirectory(destinationTextBoxes[destinationIndex].Text, out _);
+                moveButton.Enabled = hasCurrentImage && hasDestinationDirectory;
             }
         }
         #endregion 移動先アクションボタン

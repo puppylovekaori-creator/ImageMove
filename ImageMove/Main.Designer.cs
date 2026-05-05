@@ -77,6 +77,7 @@ namespace ImageMove
             this.navigationPanel = new System.Windows.Forms.FlowLayoutPanel();
             this.currentFileCaptionLabel = new System.Windows.Forms.Label();
             this.currentCountCaptionLabel = new System.Windows.Forms.Label();
+            this.operationDestinationPanel = new System.Windows.Forms.TableLayoutPanel();
             this.destinationTabPage = new System.Windows.Forms.TabPage();
             this.destinationLayoutPanel = new System.Windows.Forms.TableLayoutPanel();
             ((System.ComponentModel.ISupportInitialize)(this.pictureBox1)).BeginInit();
@@ -89,6 +90,7 @@ namespace ImageMove
             this.operationTabPage.SuspendLayout();
             this.operationLayout.SuspendLayout();
             this.navigationPanel.SuspendLayout();
+            this.operationDestinationPanel.SuspendLayout();
             this.destinationTabPage.SuspendLayout();
             this.destinationLayoutPanel.SuspendLayout();
             this.SuspendLayout();
@@ -247,16 +249,17 @@ namespace ImageMove
             this.operationLayout.Controls.Add(this.label1, 1, 3);
             this.operationLayout.Controls.Add(this.currentCountCaptionLabel, 0, 4);
             this.operationLayout.Controls.Add(this.label12, 1, 4);
+            this.operationLayout.Controls.Add(this.operationDestinationPanel, 0, 5);
             this.operationLayout.Dock = System.Windows.Forms.DockStyle.Fill;
             this.operationLayout.Location = new System.Drawing.Point(3, 3);
             this.operationLayout.Name = "operationLayout";
             this.operationLayout.Padding = new System.Windows.Forms.Padding(12);
-            this.operationLayout.RowCount = 5;
+            this.operationLayout.RowCount = 6;
             this.operationLayout.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 42F));
             this.operationLayout.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 56F));
             this.operationLayout.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 72F));
-            this.operationLayout.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 64F));
-            this.operationLayout.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 64F));
+            this.operationLayout.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 72F));
+            this.operationLayout.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 54F));
             this.operationLayout.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
             this.operationLayout.Size = new System.Drawing.Size(490, 924);
             this.operationLayout.TabIndex = 0;
@@ -349,7 +352,7 @@ namespace ImageMove
             this.currentFileCaptionLabel.Dock = System.Windows.Forms.DockStyle.Fill;
             this.currentFileCaptionLabel.Location = new System.Drawing.Point(15, 182);
             this.currentFileCaptionLabel.Name = "currentFileCaptionLabel";
-            this.currentFileCaptionLabel.Size = new System.Drawing.Size(104, 64);
+            this.currentFileCaptionLabel.Size = new System.Drawing.Size(104, 72);
             this.currentFileCaptionLabel.TabIndex = 5;
             this.currentFileCaptionLabel.Text = "現在画像";
             this.currentFileCaptionLabel.TextAlign = System.Drawing.ContentAlignment.MiddleLeft;
@@ -361,16 +364,16 @@ namespace ImageMove
             this.label1.Font = new System.Drawing.Font("メイリオ", 10F);
             this.label1.Location = new System.Drawing.Point(125, 182);
             this.label1.Name = "label1";
-            this.label1.Size = new System.Drawing.Size(350, 64);
+            this.label1.Size = new System.Drawing.Size(350, 72);
             this.label1.TabIndex = 6;
             this.label1.TextAlign = System.Drawing.ContentAlignment.MiddleLeft;
             // 
             // currentCountCaptionLabel
             // 
             this.currentCountCaptionLabel.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.currentCountCaptionLabel.Location = new System.Drawing.Point(15, 246);
+            this.currentCountCaptionLabel.Location = new System.Drawing.Point(15, 254);
             this.currentCountCaptionLabel.Name = "currentCountCaptionLabel";
-            this.currentCountCaptionLabel.Size = new System.Drawing.Size(104, 64);
+            this.currentCountCaptionLabel.Size = new System.Drawing.Size(104, 54);
             this.currentCountCaptionLabel.TabIndex = 7;
             this.currentCountCaptionLabel.Text = "進捗";
             this.currentCountCaptionLabel.TextAlign = System.Drawing.ContentAlignment.MiddleLeft;
@@ -380,12 +383,28 @@ namespace ImageMove
             this.operationLayout.SetColumnSpan(this.label12, 2);
             this.label12.Dock = System.Windows.Forms.DockStyle.Fill;
             this.label12.Font = new System.Drawing.Font("メイリオ", 10F);
-            this.label12.Location = new System.Drawing.Point(125, 246);
+            this.label12.Location = new System.Drawing.Point(125, 254);
             this.label12.Name = "label12";
-            this.label12.Size = new System.Drawing.Size(350, 64);
+            this.label12.Size = new System.Drawing.Size(350, 54);
             this.label12.TabIndex = 8;
             this.label12.Text = "N枚中、N枚目";
             this.label12.TextAlign = System.Drawing.ContentAlignment.MiddleLeft;
+            // 
+            // operationDestinationPanel
+            // 
+            this.operationLayout.SetColumnSpan(this.operationDestinationPanel, 3);
+            this.operationDestinationPanel.ColumnCount = 4;
+            this.operationDestinationPanel.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 70F));
+            this.operationDestinationPanel.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 96F));
+            this.operationDestinationPanel.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 100F));
+            this.operationDestinationPanel.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 90F));
+            this.operationDestinationPanel.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.operationDestinationPanel.Location = new System.Drawing.Point(15, 311);
+            this.operationDestinationPanel.Name = "operationDestinationPanel";
+            this.operationDestinationPanel.RowCount = 10;
+            for (int i = 0; i < 10; i++) this.operationDestinationPanel.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 44F));
+            this.operationDestinationPanel.Size = new System.Drawing.Size(460, 598);
+            this.operationDestinationPanel.TabIndex = 9;
             // 
             // destinationTabPage
             // 
@@ -757,6 +776,7 @@ namespace ImageMove
             this.operationLayout.ResumeLayout(false);
             this.operationLayout.PerformLayout();
             this.navigationPanel.ResumeLayout(false);
+            this.operationDestinationPanel.ResumeLayout(false);
             this.destinationTabPage.ResumeLayout(false);
             this.destinationLayoutPanel.ResumeLayout(false);
             this.destinationLayoutPanel.PerformLayout();
@@ -825,6 +845,7 @@ namespace ImageMove
         private System.Windows.Forms.FlowLayoutPanel navigationPanel;
         private System.Windows.Forms.Label currentFileCaptionLabel;
         private System.Windows.Forms.Label currentCountCaptionLabel;
+        private System.Windows.Forms.TableLayoutPanel operationDestinationPanel;
         private System.Windows.Forms.TableLayoutPanel destinationLayoutPanel;
     }
 }

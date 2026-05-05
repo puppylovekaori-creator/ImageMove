@@ -156,11 +156,13 @@ namespace ImageMove
             var actionPanel = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 5
+                ColumnCount = 7
             };
-            actionPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160F));
-            actionPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180F));
             actionPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140F));
+            actionPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120F));
+            actionPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150F));
+            actionPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110F));
+            actionPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170F));
             actionPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             actionPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110F));
 
@@ -173,18 +175,27 @@ namespace ImageMove
             jumpButton.Click += (_, __) => JumpToSelectedImage();
             actionPanel.Controls.Add(jumpButton, 0, 0);
 
-            var batchMoveButton = new Button
+            var checkAllButton = new Button
             {
-                Text = "チェック画像を移動",
+                Text = "全部チェック",
                 Dock = DockStyle.Fill,
                 UseVisualStyleBackColor = true
             };
-            batchMoveButton.Click += BatchMoveButton_Click;
-            actionPanel.Controls.Add(batchMoveButton, 1, 0);
+            checkAllButton.Click += async (_, __) => await ApplyCheckStateAsync(CheckApplyMode.AllTargets, true);
+            actionPanel.Controls.Add(checkAllButton, 1, 0);
+
+            var checkVisibleButton = new Button
+            {
+                Text = "表示中を全部チェック",
+                Dock = DockStyle.Fill,
+                UseVisualStyleBackColor = true
+            };
+            checkVisibleButton.Click += async (_, __) => await ApplyCheckStateAsync(CheckApplyMode.VisibleOnly, true);
+            actionPanel.Controls.Add(checkVisibleButton, 2, 0);
 
             var clearCheckButton = new Button
             {
-                Text = "選択解除",
+                Text = "全解除",
                 Dock = DockStyle.Fill,
                 UseVisualStyleBackColor = true
             };
@@ -194,14 +205,23 @@ namespace ImageMove
                 imageGrid.InvalidateColumn(imageGrid.Columns["checked"].Index);
                 UpdateSummaryLabel();
             };
-            actionPanel.Controls.Add(clearCheckButton, 2, 0);
+            actionPanel.Controls.Add(clearCheckButton, 3, 0);
+
+            var batchMoveButton = new Button
+            {
+                Text = "チェック画像を移動",
+                Dock = DockStyle.Fill,
+                UseVisualStyleBackColor = true
+            };
+            batchMoveButton.Click += BatchMoveButton_Click;
+            actionPanel.Controls.Add(batchMoveButton, 4, 0);
 
             summaryLabel = new Label
             {
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleLeft
             };
-            actionPanel.Controls.Add(summaryLabel, 3, 0);
+            actionPanel.Controls.Add(summaryLabel, 5, 0);
 
             var closeButton = new Button
             {
@@ -210,7 +230,7 @@ namespace ImageMove
                 UseVisualStyleBackColor = true
             };
             closeButton.Click += (_, __) => Close();
-            actionPanel.Controls.Add(closeButton, 4, 0);
+            actionPanel.Controls.Add(closeButton, 6, 0);
 
             rootLayout.Controls.Add(filterPanel, 0, 0);
             rootLayout.Controls.Add(imageGrid, 0, 1);
@@ -480,6 +500,68 @@ namespace ImageMove
             string state = filterInProgress ? " / 絞り込み中" : string.Empty;
             string suffix = string.IsNullOrWhiteSpace(truncationMessage) ? string.Empty : $" / {truncationMessage}";
             summaryLabel.Text = $"表示 {visibleRowCount:N0} 件 / 対象 {matchedRowCount:N0} 件 / 全体 {currentSnapshot.FullPaths.Length:N0} 件 / チェック {checkedPaths.Count:N0} 件{state}{suffix}";
+        }
+
+        private async Task ApplyCheckStateAsync(CheckApplyMode mode, bool isChecked)
+        {
+            try
+            {
+                UseWaitCursor = true;
+                string filterText = (filterTextBox.Text ?? string.Empty).Trim();
+                ImageBrowserSnapshot snapshot = currentSnapshot;
+                string[] targetPaths = await Task.Run(() => CollectTargetPaths(snapshot, filterText, mode));
+
+                if (isChecked)
+                {
+                    checkedPaths.UnionWith(targetPaths);
+                }
+                else
+                {
+                    foreach (string path in targetPaths)
+                    {
+                        checkedPaths.Remove(path);
+                    }
+                }
+
+                imageGrid.InvalidateColumn(imageGrid.Columns["checked"].Index);
+                UpdateSummaryLabel();
+            }
+            finally
+            {
+                UseWaitCursor = false;
+            }
+        }
+
+        private string[] CollectTargetPaths(ImageBrowserSnapshot snapshot, string filterText, CheckApplyMode mode)
+        {
+            if (snapshot.FullPaths.Length == 0)
+            {
+                return Array.Empty<string>();
+            }
+
+            if (mode == CheckApplyMode.VisibleOnly)
+            {
+                int count = visibleRowCount;
+                string[] paths = new string[count];
+                for (int rowIndex = 0; rowIndex < count; rowIndex++)
+                {
+                    int masterIndex = GetMasterIndex(rowIndex);
+                    paths[rowIndex] = masterIndex >= 0 ? snapshot.FullPaths[masterIndex] : string.Empty;
+                }
+
+                return paths.Where(path => !string.IsNullOrWhiteSpace(path)).ToArray();
+            }
+
+            if (string.IsNullOrWhiteSpace(filterText))
+            {
+                return snapshot.FullPaths.ToArray();
+            }
+
+            return snapshot.FullPaths
+                .Where(path =>
+                    path.IndexOf(filterText, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    Path.GetFileName(path).IndexOf(filterText, StringComparison.OrdinalIgnoreCase) >= 0)
+                .ToArray();
         }
 
         private void ImageGrid_CurrentCellDirtyStateChanged(object sender, EventArgs e)
@@ -855,6 +937,12 @@ namespace ImageMove
         public string FullPath { get; set; }
 
         public bool IsCurrent { get; set; }
+    }
+
+    internal enum CheckApplyMode
+    {
+        AllTargets,
+        VisibleOnly
     }
 
     internal sealed class FilterResult
