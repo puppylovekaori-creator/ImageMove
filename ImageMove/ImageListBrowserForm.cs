@@ -37,6 +37,7 @@ namespace ImageMove
         private int matchedRowCount;
         private string truncationMessage = string.Empty;
         private bool batchMoveInProgress;
+        private bool checkApplyInProgress;
 
         internal ImageListBrowserForm(Main ownerMain)
         {
@@ -350,6 +351,7 @@ namespace ImageMove
             ImageBrowserSnapshot snapshot = currentSnapshot;
 
             filterInProgress = true;
+            UpdateUiBusyState();
             UpdateSummaryLabel();
 
             Task.Run(() => BuildFilteredRows(snapshot, filterText, token), token)
@@ -362,6 +364,7 @@ namespace ImageMove
                         }
 
                         filterInProgress = false;
+                        UpdateUiBusyState();
 
                         if (task.IsCanceled)
                         {
@@ -605,7 +608,8 @@ namespace ImageMove
 
                 try
                 {
-                    SetBatchMoveBusyState(true);
+                    batchMoveInProgress = true;
+                    UpdateUiBusyState();
                     UpdateBatchMoveProgress(new BatchMoveProgressInfo(selectedPaths.Count, 0, 0, 0, "一括移動を開始します。", string.Empty));
                     Application.DoEvents();
 
@@ -640,15 +644,29 @@ namespace ImageMove
                 }
                 finally
                 {
-                    SetBatchMoveBusyState(false);
+                    batchMoveInProgress = false;
+                    ResetBatchMoveProgress();
+                    UpdateUiBusyState();
                 }
             }
         }
 
         private void UpdateSummaryLabel()
         {
-            string state = filterInProgress ? " / 絞り込み中" : string.Empty;
-            if (!filterInProgress && HasPendingFilterChange())
+            string state = string.Empty;
+            if (batchMoveInProgress)
+            {
+                state = " / 一括移動中";
+            }
+            else if (checkApplyInProgress)
+            {
+                state = " / チェック更新中";
+            }
+            else if (filterInProgress)
+            {
+                state = " / 絞り込み中";
+            }
+            else if (HasPendingFilterChange())
             {
                 state = " / 条件未適用";
             }
@@ -663,19 +681,14 @@ namespace ImageMove
             return !string.Equals(currentFilterText, appliedFilterText ?? string.Empty, StringComparison.Ordinal);
         }
 
-        private void SetBatchMoveBusyState(bool isBusy)
+        private void UpdateUiBusyState()
         {
-            batchMoveInProgress = isBusy;
+            bool isBusy = batchMoveInProgress || filterInProgress || checkApplyInProgress;
             UseWaitCursor = isBusy;
 
             foreach (Control control in batchMoveBusyControls)
             {
                 control.Enabled = !isBusy;
-            }
-
-            if (!isBusy)
-            {
-                ResetBatchMoveProgress();
             }
 
             batchMoveProgressBar.Refresh();
@@ -723,7 +736,9 @@ namespace ImageMove
         {
             try
             {
-                UseWaitCursor = true;
+                checkApplyInProgress = true;
+                UpdateUiBusyState();
+                UpdateSummaryLabel();
                 string filterText = (filterTextBox.Text ?? string.Empty).Trim();
                 ImageBrowserSnapshot snapshot = currentSnapshot;
                 string[] targetPaths = await Task.Run(() => CollectTargetPaths(snapshot, filterText, mode));
@@ -745,7 +760,9 @@ namespace ImageMove
             }
             finally
             {
-                UseWaitCursor = false;
+                checkApplyInProgress = false;
+                UpdateUiBusyState();
+                UpdateSummaryLabel();
             }
         }
 
@@ -1149,13 +1166,28 @@ namespace ImageMove
         private readonly Dictionary<string, int> pathToIndexMap;
 
         internal ImageBrowserSnapshot(string[] fullPaths, string sourceRoot, string currentPath, int currentIndex)
+            : this(fullPaths, null, null, sourceRoot, currentPath, currentIndex)
+        {
+        }
+
+        internal ImageBrowserSnapshot(
+            string[] fullPaths,
+            string[] fileNames,
+            Dictionary<string, int> existingPathToIndexMap,
+            string sourceRoot,
+            string currentPath,
+            int currentIndex)
         {
             FullPaths = fullPaths ?? Array.Empty<string>();
             SourceRoot = sourceRoot ?? string.Empty;
             CurrentPath = currentPath ?? string.Empty;
             CurrentIndex = currentIndex;
-            FileNames = BuildFileNames(FullPaths);
-            pathToIndexMap = BuildPathToIndexMap(FullPaths);
+            FileNames = fileNames != null && fileNames.Length == FullPaths.Length
+                ? fileNames
+                : BuildFileNames(FullPaths);
+            pathToIndexMap = existingPathToIndexMap != null && existingPathToIndexMap.Count > 0
+                ? existingPathToIndexMap
+                : BuildPathToIndexMap(FullPaths);
         }
 
         internal string[] FullPaths { get; }

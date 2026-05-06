@@ -48,6 +48,15 @@ namespace ImageMove
         /// <summary> 画像ファイルパスのリスト </summary>
         private List<string> imagePaths = new List<string>();
 
+        /// <summary> 読み取り専用の画像パススナップショット </summary>
+        private string[] imagePathSnapshot = Array.Empty<string>();
+
+        /// <summary> 読み取り専用のファイル名スナップショット </summary>
+        private string[] imageFileNameSnapshot = Array.Empty<string>();
+
+        /// <summary> フルパスから現在インデックスを引くための索引 </summary>
+        private Dictionary<string, int> imagePathIndexMap = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
         /// <summary> 現在表示している画像のインデックス </summary>
         private int currentImageIndex = -1;
 
@@ -936,7 +945,7 @@ namespace ImageMove
                 string previousImagePath = GetCurrentImagePath();
                 int previousIndex = currentImageIndex;
 
-                imagePaths = CollectImagePaths(sourceDirectory);
+                ReplaceImagePaths(CollectImagePaths(sourceDirectory));
                 currentImageIndex = ResolveReloadIndex(previousImagePath, previousIndex);
                 RememberSourceDirectory(sourceDirectory);
 
@@ -973,6 +982,64 @@ namespace ImageMove
                 .ToList();
         }
 
+        private void ReplaceImagePaths(List<string> paths)
+        {
+            imagePaths = paths ?? new List<string>();
+            RebuildImagePathCache();
+        }
+
+        private void RebuildImagePathCache()
+        {
+            imagePathSnapshot = imagePaths.Count == 0 ? Array.Empty<string>() : imagePaths.ToArray();
+            imageFileNameSnapshot = new string[imagePathSnapshot.Length];
+            var updatedIndexMap = new Dictionary<string, int>(imagePathSnapshot.Length, StringComparer.OrdinalIgnoreCase);
+            for (int index = 0; index < imagePathSnapshot.Length; index++)
+            {
+                string path = imagePathSnapshot[index];
+                imageFileNameSnapshot[index] = string.IsNullOrWhiteSpace(path) ? string.Empty : Path.GetFileName(path) ?? string.Empty;
+                if (!string.IsNullOrWhiteSpace(path))
+                {
+                    updatedIndexMap[path] = index;
+                }
+            }
+
+            imagePathIndexMap = updatedIndexMap;
+        }
+
+        private void EnsureImagePathCacheCurrent()
+        {
+            if (imagePathSnapshot.Length != imagePaths.Count)
+            {
+                RebuildImagePathCache();
+                return;
+            }
+
+            if (imagePaths.Count == 0)
+            {
+                return;
+            }
+
+            string firstSnapshotPath = imagePathSnapshot[0];
+            string lastSnapshotPath = imagePathSnapshot[imagePathSnapshot.Length - 1];
+            if (!string.Equals(firstSnapshotPath, imagePaths[0], StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(lastSnapshotPath, imagePaths[imagePaths.Count - 1], StringComparison.OrdinalIgnoreCase))
+            {
+                RebuildImagePathCache();
+            }
+        }
+
+        private bool TryGetImagePathIndex(string fullPath, out int index)
+        {
+            EnsureImagePathCacheCurrent();
+            index = -1;
+            if (string.IsNullOrWhiteSpace(fullPath))
+            {
+                return false;
+            }
+
+            return imagePathIndexMap.TryGetValue(fullPath, out index);
+        }
+
         /// <summary>
         /// 再読み込み後の表示位置を決定する
         /// </summary>
@@ -983,15 +1050,9 @@ namespace ImageMove
                 return -1;
             }
 
-            if (!string.IsNullOrWhiteSpace(previousImagePath))
+            if (TryGetImagePathIndex(previousImagePath, out int existingIndex))
             {
-                int existingIndex = imagePaths.FindIndex(
-                    path => string.Equals(path, previousImagePath, StringComparison.OrdinalIgnoreCase));
-
-                if (existingIndex >= 0)
-                {
-                    return existingIndex;
-                }
+                return existingIndex;
             }
 
             if (previousIndex < 0)
@@ -1373,6 +1434,7 @@ namespace ImageMove
                     RestoreMovedImagePath(item);
                 }
 
+                RebuildImagePathCache();
                 moveHistoryActions.Pop();
                 FocusRestoredImage(action);
                 UpdateUndoState();
@@ -1446,8 +1508,7 @@ namespace ImageMove
 
             if (!string.IsNullOrWhiteSpace(focusPath))
             {
-                int restoredIndex = imagePaths.FindIndex(path => string.Equals(path, focusPath, StringComparison.OrdinalIgnoreCase));
-                if (restoredIndex >= 0)
+                if (TryGetImagePathIndex(focusPath, out int restoredIndex))
                 {
                     currentImageIndex = restoredIndex;
                 }
@@ -1513,9 +1574,12 @@ namespace ImageMove
         /// </summary>
         internal ImageBrowserSnapshot GetImageBrowserSnapshot()
         {
+            EnsureImagePathCacheCurrent();
             string sourceRoot = NormalizeDirectoryPath(textBox1.Text);
             return new ImageBrowserSnapshot(
-                imagePaths.ToArray(),
+                imagePathSnapshot,
+                imageFileNameSnapshot,
+                imagePathIndexMap,
                 sourceRoot,
                 GetCurrentImagePath() ?? string.Empty,
                 currentImageIndex);
@@ -1563,8 +1627,7 @@ namespace ImageMove
         /// </summary>
         internal bool ShowImageByPath(string fullPath)
         {
-            int nextIndex = imagePaths.FindIndex(path => string.Equals(path, fullPath, StringComparison.OrdinalIgnoreCase));
-            if (nextIndex < 0)
+            if (!TryGetImagePathIndex(fullPath, out int nextIndex))
             {
                 return false;
             }
@@ -1902,6 +1965,7 @@ namespace ImageMove
 
             RememberDestinationDirectory(normalizedDestinationDirectory);
             var movedItems = new List<MoveHistoryItem>();
+            var movedSourcePaths = new List<string>();
             progressCallback?.Invoke(new BatchMoveProgressInfo(totalCount, 0, 0, 0, "一括移動を開始しました。", string.Empty));
 
             foreach (string sourcePath in distinctSourcePaths)
@@ -1936,12 +2000,12 @@ namespace ImageMove
                     continue;
                 }
 
-                int originalIndex = imagePaths.FindIndex(path => string.Equals(path, sourcePath, StringComparison.OrdinalIgnoreCase));
+                int originalIndex = imagePaths.Count;
+                TryGetImagePathIndex(sourcePath, out originalIndex);
 
                 try
                 {
                     File.Move(sourcePath, destinationPath);
-                    RemoveImagePathFromQueue(sourcePath);
 
                     movedItems.Add(new MoveHistoryItem
                     {
@@ -1951,6 +2015,7 @@ namespace ImageMove
                     });
 
                     result.MovedSourcePaths.Add(sourcePath);
+                    movedSourcePaths.Add(sourcePath);
                     processedCount++;
                     progressCallback?.Invoke(new BatchMoveProgressInfo(totalCount, processedCount, movedItems.Count, skippedCount, "移動しました。", currentFileName));
                 }
@@ -1966,8 +2031,8 @@ namespace ImageMove
 
             if (movedItems.Count > 0)
             {
+                RemoveImagePathsFromQueue(movedSourcePaths);
                 moveHistoryActions.Push(new MoveHistoryAction(actionLabel, movedItems));
-                NormalizeCurrentIndex();
 
                 if (HasCurrentImage())
                 {
@@ -1997,25 +2062,47 @@ namespace ImageMove
         /// <summary>
         /// キューから指定画像を除外する
         /// </summary>
-        private void RemoveImagePathFromQueue(string sourcePath)
+        private void RemoveImagePathsFromQueue(IReadOnlyCollection<string> sourcePaths)
         {
-            int removeIndex = imagePaths.FindIndex(path => string.Equals(path, sourcePath, StringComparison.OrdinalIgnoreCase));
-            if (removeIndex < 0)
+            if (sourcePaths == null || sourcePaths.Count == 0 || imagePaths.Count == 0)
             {
                 return;
             }
 
-            imagePaths.RemoveAt(removeIndex);
-            RemoveCachedImage(sourcePath);
+            var removeSet = new HashSet<string>(sourcePaths.Where(path => !string.IsNullOrWhiteSpace(path)), StringComparer.OrdinalIgnoreCase);
+            if (removeSet.Count == 0)
+            {
+                return;
+            }
 
-            if (removeIndex < currentImageIndex)
+            var remainingPaths = new List<string>(Math.Max(0, imagePaths.Count - removeSet.Count));
+            int removedBeforeCurrent = 0;
+
+            for (int index = 0; index < imagePaths.Count; index++)
             {
-                currentImageIndex--;
+                string path = imagePaths[index];
+                if (removeSet.Contains(path))
+                {
+                    RemoveCachedImage(path);
+                    if (index < currentImageIndex)
+                    {
+                        removedBeforeCurrent++;
+                    }
+
+                    continue;
+                }
+
+                remainingPaths.Add(path);
             }
-            else if (removeIndex == currentImageIndex && currentImageIndex >= imagePaths.Count)
+
+            imagePaths = remainingPaths;
+            if (currentImageIndex >= 0)
             {
-                currentImageIndex = imagePaths.Count - 1;
+                currentImageIndex -= removedBeforeCurrent;
             }
+
+            NormalizeCurrentIndex();
+            RebuildImagePathCache();
         }
 
         /// <summary>
@@ -2255,17 +2342,17 @@ namespace ImageMove
         private void ScheduleImagePrefetch(int centerIndex)
         {
             CancelImagePrefetch();
+            EnsureImagePathCacheCurrent();
 
-            if (imagePaths.Count == 0 || centerIndex < 0 || centerIndex >= imagePaths.Count)
+            if (imagePathSnapshot.Length == 0 || centerIndex < 0 || centerIndex >= imagePathSnapshot.Length)
             {
                 return;
             }
 
-            string[] pathSnapshot = imagePaths.ToArray();
             var cancellationTokenSource = new System.Threading.CancellationTokenSource();
             imagePrefetchCancellationTokenSource = cancellationTokenSource;
 
-            Task.Run(() => PrefetchImagesAroundIndex(pathSnapshot, centerIndex, cancellationTokenSource.Token), cancellationTokenSource.Token)
+            Task.Run(() => PrefetchImagesAroundIndex(imagePathSnapshot, centerIndex, cancellationTokenSource.Token), cancellationTokenSource.Token)
                 .ContinueWith(
                     task =>
                     {
