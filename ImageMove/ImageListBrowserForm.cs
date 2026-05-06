@@ -23,7 +23,6 @@ namespace ImageMove
         private readonly ProgressBar batchMoveProgressBar;
         private readonly Label batchMoveStatusLabel;
         private readonly List<Control> batchMoveBusyControls = new List<Control>();
-        private readonly System.Windows.Forms.Timer filterDelayTimer;
         private CancellationTokenSource filterCts;
         private ImageBrowserSnapshot currentSnapshot = ImageBrowserSnapshot.Empty;
         private int[] filteredIndices = Array.Empty<int>();
@@ -48,12 +47,6 @@ namespace ImageMove
             ClientSize = new Size(1120, 760);
             MinimumSize = new Size(920, 620);
 
-            filterDelayTimer = new System.Windows.Forms.Timer
-            {
-                Interval = 280
-            };
-            filterDelayTimer.Tick += FilterDelayTimer_Tick;
-
             var rootLayout = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -68,10 +61,11 @@ namespace ImageMove
             var filterPanel = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 4
+                ColumnCount = 5
             };
             filterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120F));
             filterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            filterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110F));
             filterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110F));
             filterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180F));
 
@@ -87,7 +81,17 @@ namespace ImageMove
                 Dock = DockStyle.Fill
             };
             filterTextBox.TextChanged += FilterTextBox_TextChanged;
+            filterTextBox.KeyDown += FilterTextBox_KeyDown;
             filterPanel.Controls.Add(filterTextBox, 1, 0);
+
+            var applyFilterButton = new Button
+            {
+                Text = "絞り込み",
+                Dock = DockStyle.Fill,
+                UseVisualStyleBackColor = true
+            };
+            applyFilterButton.Click += (_, __) => ApplyCurrentFilter();
+            filterPanel.Controls.Add(applyFilterButton, 2, 0);
 
             var clearFilterButton = new Button
             {
@@ -95,8 +99,12 @@ namespace ImageMove
                 Dock = DockStyle.Fill,
                 UseVisualStyleBackColor = true
             };
-            clearFilterButton.Click += (_, __) => filterTextBox.Clear();
-            filterPanel.Controls.Add(clearFilterButton, 2, 0);
+            clearFilterButton.Click += (_, __) =>
+            {
+                filterTextBox.Clear();
+                ApplyCurrentFilter();
+            };
+            filterPanel.Controls.Add(clearFilterButton, 3, 0);
 
             var refreshButton = new Button
             {
@@ -105,7 +113,7 @@ namespace ImageMove
                 UseVisualStyleBackColor = true
             };
             refreshButton.Click += (_, __) => RefreshItems();
-            filterPanel.Controls.Add(refreshButton, 3, 0);
+            filterPanel.Controls.Add(refreshButton, 4, 0);
 
             imageGrid = new DataGridView
             {
@@ -277,6 +285,7 @@ namespace ImageMove
             Controls.Add(rootLayout);
 
             batchMoveBusyControls.Add(filterTextBox);
+            batchMoveBusyControls.Add(applyFilterButton);
             batchMoveBusyControls.Add(clearFilterButton);
             batchMoveBusyControls.Add(refreshButton);
             batchMoveBusyControls.Add(imageGrid);
@@ -301,7 +310,6 @@ namespace ImageMove
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
-            filterDelayTimer.Stop();
             filterCts?.Cancel();
             filterCts?.Dispose();
             base.OnFormClosed(e);
@@ -331,16 +339,18 @@ namespace ImageMove
 
         private void FilterTextBox_TextChanged(object sender, EventArgs e)
         {
-            pendingPreferredSelectedPath = GetSelectedPath() ?? currentPath;
-            filterDelayTimer.Stop();
-            filterDelayTimer.Start();
             UpdateSummaryLabel();
         }
 
-        private void FilterDelayTimer_Tick(object sender, EventArgs e)
+        private void FilterTextBox_KeyDown(object sender, KeyEventArgs e)
         {
-            filterDelayTimer.Stop();
-            BeginApplyFilterAsync((filterTextBox.Text ?? string.Empty).Trim(), pendingPreferredSelectedPath);
+            if (e.KeyCode != Keys.Enter)
+            {
+                return;
+            }
+
+            e.SuppressKeyPress = true;
+            ApplyCurrentFilter();
         }
 
         private void BeginApplyFilterAsync(string filterText, string preferredSelectedPath)
@@ -403,6 +413,12 @@ namespace ImageMove
                     CancellationToken.None,
                     TaskContinuationOptions.None,
                     TaskScheduler.FromCurrentSynchronizationContext());
+        }
+
+        private void ApplyCurrentFilter()
+        {
+            pendingPreferredSelectedPath = GetSelectedPath() ?? currentPath;
+            BeginApplyFilterAsync((filterTextBox.Text ?? string.Empty).Trim(), pendingPreferredSelectedPath);
         }
 
         private static FilterResult BuildFilteredRows(ImageBrowserSnapshot snapshot, string filterText, CancellationToken token)
@@ -644,8 +660,19 @@ namespace ImageMove
         private void UpdateSummaryLabel()
         {
             string state = filterInProgress ? " / 絞り込み中" : string.Empty;
+            if (!filterInProgress && HasPendingFilterChange())
+            {
+                state = " / 条件未適用";
+            }
+
             string suffix = string.IsNullOrWhiteSpace(truncationMessage) ? string.Empty : $" / {truncationMessage}";
             summaryLabel.Text = $"表示 {visibleRowCount:N0} 件 / 対象 {matchedRowCount:N0} 件 / 全体 {currentSnapshot.FullPaths.Length:N0} 件 / チェック {checkedPaths.Count:N0} 件{state}{suffix}";
+        }
+
+        private bool HasPendingFilterChange()
+        {
+            string currentFilterText = (filterTextBox.Text ?? string.Empty).Trim();
+            return !string.Equals(currentFilterText, appliedFilterText ?? string.Empty, StringComparison.Ordinal);
         }
 
         private void SetBatchMoveBusyState(bool isBusy)
