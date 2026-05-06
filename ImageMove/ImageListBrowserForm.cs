@@ -434,8 +434,16 @@ namespace ImageMove
                 return;
             }
 
-            currentPath = newCurrentPath ?? string.Empty;
-            imageGrid.InvalidateColumn(imageGrid.Columns["current"].Index);
+            string previousPath = currentPath;
+            string nextPath = newCurrentPath ?? string.Empty;
+            if (string.Equals(previousPath, nextPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            currentPath = nextPath;
+            InvalidateCurrentMarkerRow(previousPath);
+            InvalidateCurrentMarkerRow(nextPath);
         }
 
         internal bool IsFilterInProgressForTest()
@@ -1382,6 +1390,28 @@ namespace ImageMove
             }
 
             return filteredRowIndex;
+        }
+
+        private void InvalidateCurrentMarkerRow(string targetPath)
+        {
+            if (string.IsNullOrWhiteSpace(targetPath) || imageGrid.IsDisposed || imageGrid.Columns.Count == 0)
+            {
+                return;
+            }
+
+            int rowIndex = TryResolveDirectRowIndex(targetPath);
+            if (rowIndex < 0 || rowIndex >= imageGrid.RowCount)
+            {
+                return;
+            }
+
+            int columnIndex = imageGrid.Columns["current"].Index;
+            if (columnIndex < 0)
+            {
+                return;
+            }
+
+            imageGrid.InvalidateCell(columnIndex, rowIndex);
         }
 
         private int GetMasterIndex(int rowIndex)

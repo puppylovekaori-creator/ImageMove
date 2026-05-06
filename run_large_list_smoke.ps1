@@ -352,8 +352,9 @@ try {
     $isFilterMethod = $browserForm.GetType().GetMethod('IsFilterInProgressForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
     $rowCountMethod = $browserForm.GetType().GetMethod('VisibleRowCountForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
     $filterMethod = $browserForm.GetType().GetMethod('StartImmediateFilterForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    $updateCurrentPathMethod = $browserForm.GetType().GetMethod('UpdateCurrentPath', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
 
-    if ($null -eq $isFilterMethod -or $null -eq $rowCountMethod -or $null -eq $filterMethod) {
+    if ($null -eq $isFilterMethod -or $null -eq $rowCountMethod -or $null -eq $filterMethod -or $null -eq $updateCurrentPathMethod) {
         throw 'Test helper methods were not found on ImageListBrowserForm.'
     }
 
@@ -366,6 +367,17 @@ try {
     $expectedVisibleCount = [Math]::Min($SyntheticImageCount, $ExpectedVisibleRowLimit)
     if ($visibleCount -ne $expectedVisibleCount) {
         throw "Expected $expectedVisibleCount visible rows, actual=$visibleCount"
+    }
+
+    $currentPathUpdateStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    for ($index = 0; $index -lt 50; $index++) {
+        $path = $syntheticPaths[($index * 997) % $syntheticPaths.Count]
+        $updateCurrentPathMethod.Invoke($browserForm, @($path)) | Out-Null
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+    $currentPathUpdateStopwatch.Stop()
+    if ($currentPathUpdateStopwatch.ElapsedMilliseconds -gt 300) {
+        throw "Current-path update is too slow: $($currentPathUpdateStopwatch.ElapsedMilliseconds) ms"
     }
 
     $filterTerm = 'sample_001999'
@@ -391,7 +403,7 @@ try {
         $chainResults += ("{0}={1}ms/{2}" -f $term, $chainStopwatch.ElapsedMilliseconds, $chainVisibleCount)
     }
 
-    Write-Host ("RESULT2: open_ms={0} visible={1} filter_ms={2} filtered={3}" -f $openStopwatch.ElapsedMilliseconds, $visibleCount, $filterStopwatch.ElapsedMilliseconds, $filteredCount)
+    Write-Host ("RESULT2: open_ms={0} visible={1} current_update_ms={2} filter_ms={3} filtered={4}" -f $openStopwatch.ElapsedMilliseconds, $visibleCount, $currentPathUpdateStopwatch.ElapsedMilliseconds, $filterStopwatch.ElapsedMilliseconds, $filteredCount)
     Write-Host ("RESULT2B: {0}" -f ($chainResults -join ', '))
     Write-Host 'TEST2C: close browser while filter is still running'
     $filterMethod.Invoke($browserForm, @('sample_001')) | Out-Null

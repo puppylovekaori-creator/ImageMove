@@ -25,6 +25,8 @@ namespace ImageMove
         private const int PrefetchBehindImageCount = 12;
         private const int MaxCachedImageCount = 96;
         private const long MaxCachedImageBytes = 1536L * 1024L * 1024L;
+        private const int PrefetchDelayMs = 180;
+        private const int BrowserRefreshDelayMs = 120;
 
         #region フィールド
         /// <summary> ロガー </summary>
@@ -93,6 +95,12 @@ namespace ImageMove
         /// <summary> 押しっぱなし連続処理タイマー </summary>
         private readonly Timer repeatActionTimer;
 
+        /// <summary> 先読み開始を遅延させるタイマー </summary>
+        private readonly Timer prefetchDelayTimer;
+
+        /// <summary> 一覧別窓再構築を遅延させるタイマー </summary>
+        private readonly Timer browserRefreshTimer;
+
         /// <summary> 現在押しっぱなし中のボタン </summary>
         private Button activeRepeatButton;
 
@@ -134,6 +142,12 @@ namespace ImageMove
 
         /// <summary> 進行中の先読みキャンセル用 </summary>
         private System.Threading.CancellationTokenSource imagePrefetchCancellationTokenSource;
+
+        /// <summary> 画像パスキャッシュが最新か </summary>
+        private bool imagePathCacheDirty;
+
+        /// <summary> 次に先読みしたい中心位置 </summary>
+        private int pendingPrefetchCenterIndex = -1;
         #endregion フィールド
 
         #region コンストラクタ
@@ -165,6 +179,16 @@ namespace ImageMove
                 Interval = RepeatInitialDelayMs
             };
             repeatActionTimer.Tick += RepeatActionTimer_Tick;
+            prefetchDelayTimer = new Timer
+            {
+                Interval = PrefetchDelayMs
+            };
+            prefetchDelayTimer.Tick += PrefetchDelayTimer_Tick;
+            browserRefreshTimer = new Timer
+            {
+                Interval = BrowserRefreshDelayMs
+            };
+            browserRefreshTimer.Tick += BrowserRefreshTimer_Tick;
 
             InitializeUi();
             LoadSettingIfExists();
@@ -363,6 +387,8 @@ namespace ImageMove
         private void Main_FormClosing(object sender, FormClosingEventArgs e)
         {
             StopRepeatAction();
+            prefetchDelayTimer.Stop();
+            browserRefreshTimer.Stop();
             CancelImagePrefetch();
             ClearImageCache();
             SaveSettingSafe();
@@ -1004,10 +1030,22 @@ namespace ImageMove
             }
 
             imagePathIndexMap = updatedIndexMap;
+            imagePathCacheDirty = false;
+        }
+
+        private void InvalidateImagePathCache()
+        {
+            imagePathCacheDirty = true;
         }
 
         private void EnsureImagePathCacheCurrent()
         {
+            if (imagePathCacheDirty)
+            {
+                RebuildImagePathCache();
+                return;
+            }
+
             if (imagePathSnapshot.Length != imagePaths.Count)
             {
                 RebuildImagePathCache();
@@ -1108,7 +1146,7 @@ namespace ImageMove
 
                 UpdateNavigationButtons();
                 UpdateImageBrowserCurrentPathIfOpen(imagePath);
-                ScheduleImagePrefetch(currentImageIndex);
+                RequestImagePrefetch(currentImageIndex);
             }
             catch (Exception ex)
             {
@@ -1133,6 +1171,8 @@ namespace ImageMove
         /// </summary>
         private void ClearDisplayedImage(string statusText)
         {
+            prefetchDelayTimer.Stop();
+            pendingPrefetchCenterIndex = -1;
             CancelImagePrefetch();
             ReplaceDisplayedImage(null);
             label1.Text = string.Empty;
@@ -1556,6 +1596,18 @@ namespace ImageMove
             {
                 imageListBrowserForm.RefreshItems();
             }
+        }
+
+        private void ScheduleImageBrowserRefreshIfOpen()
+        {
+            if (imageListBrowserForm == null || imageListBrowserForm.IsDisposed)
+            {
+                browserRefreshTimer.Stop();
+                return;
+            }
+
+            browserRefreshTimer.Stop();
+            browserRefreshTimer.Start();
         }
 
         /// <summary>
@@ -2043,13 +2095,28 @@ namespace ImageMove
                     ClearDisplayedImage("画像がありません。");
                 }
 
-                RefreshImageBrowserItemsIfOpen();
+                if (progressCallback == null && distinctSourcePaths.Count == 1)
+                {
+                    ScheduleImageBrowserRefreshIfOpen();
+                }
+                else
+                {
+                    RefreshImageBrowserItemsIfOpen();
+                }
+
                 SaveSettingSafe();
             }
             else
             {
                 UpdateNavigationButtons();
-                RefreshImageBrowserItemsIfOpen();
+                if (progressCallback == null && distinctSourcePaths.Count == 1)
+                {
+                    ScheduleImageBrowserRefreshIfOpen();
+                }
+                else
+                {
+                    RefreshImageBrowserItemsIfOpen();
+                }
             }
 
             result.MovedCount = movedItems.Count;
@@ -2102,7 +2169,7 @@ namespace ImageMove
             }
 
             NormalizeCurrentIndex();
-            RebuildImagePathCache();
+            InvalidateImagePathCache();
         }
 
         /// <summary>
@@ -2339,6 +2406,43 @@ namespace ImageMove
                 imageCacheLru.Clear();
                 cachedImageBytes = 0;
             }
+        }
+
+        /// <summary>
+        /// 先読み開始要求を登録する
+        /// </summary>
+        private void RequestImagePrefetch(int centerIndex)
+        {
+            pendingPrefetchCenterIndex = centerIndex;
+            prefetchDelayTimer.Stop();
+
+            if (centerIndex < 0 || centerIndex >= imagePaths.Count)
+            {
+                CancelImagePrefetch();
+                return;
+            }
+
+            prefetchDelayTimer.Start();
+        }
+
+        /// <summary>
+        /// 先読み開始遅延タイマー
+        /// </summary>
+        private void PrefetchDelayTimer_Tick(object sender, EventArgs e)
+        {
+            prefetchDelayTimer.Stop();
+            int centerIndex = pendingPrefetchCenterIndex;
+            pendingPrefetchCenterIndex = -1;
+            ScheduleImagePrefetch(centerIndex);
+        }
+
+        /// <summary>
+        /// 一覧別窓の遅延再構築タイマー
+        /// </summary>
+        private void BrowserRefreshTimer_Tick(object sender, EventArgs e)
+        {
+            browserRefreshTimer.Stop();
+            RefreshImageBrowserItemsIfOpen();
         }
 
         /// <summary>
