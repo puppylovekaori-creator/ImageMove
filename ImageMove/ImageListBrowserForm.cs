@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -12,6 +13,7 @@ namespace ImageMove
     internal sealed class ImageListBrowserForm : Form
     {
         private const int MaxVisibleRows = 100000;
+        private const int ParallelFilterThreshold = 50000;
 
         private readonly Main ownerMain;
         private readonly HashSet<string> checkedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -28,6 +30,7 @@ namespace ImageMove
         private readonly Dictionary<int, string> relativePathCache = new Dictionary<int, string>();
         private string currentPath = string.Empty;
         private string pendingPreferredSelectedPath = string.Empty;
+        private string appliedFilterText = string.Empty;
         private bool filterInProgress;
         private bool showAllRows = true;
         private int visibleRowCount;
@@ -376,15 +379,25 @@ namespace ImageMove
                         }
 
                         FilterResult result = task.Result;
+                        appliedFilterText = filterText;
                         showAllRows = result.ShowAllRows;
                         filteredIndices = result.Indices;
                         visibleRowCount = result.RowCount;
                         visibleStartIndex = result.StartIndex;
                         matchedRowCount = result.MatchedCount;
                         truncationMessage = result.TruncationMessage;
-                        imageGrid.RowCount = visibleRowCount;
-                        UpdateSummaryLabel();
-                        RestoreSelectedRow(preferredSelectedPath);
+                        imageGrid.SuspendLayout();
+                        try
+                        {
+                            imageGrid.RowCount = visibleRowCount;
+                            UpdateSummaryLabel();
+                            RestoreSelectedRow(preferredSelectedPath);
+                        }
+                        finally
+                        {
+                            imageGrid.ResumeLayout();
+                        }
+
                         imageGrid.Invalidate();
                     },
                     CancellationToken.None,
@@ -415,28 +428,101 @@ namespace ImageMove
                 return FilterResult.AllRows(visibleCount, startIndex, paths.Length, truncationMessage);
             }
 
-            var matches = new List<int>(Math.Min(paths.Length, MaxVisibleRows));
-            int matchedCount = 0;
-            for (int index = 0; index < paths.Length; index++)
-            {
-                token.ThrowIfCancellationRequested();
-                string path = paths[index];
-                if (path.IndexOf(filterText, StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    Path.GetFileName(path).IndexOf(filterText, StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    matchedCount++;
-                    if (matches.Count < MaxVisibleRows)
-                    {
-                        matches.Add(index);
-                    }
-                }
-            }
+            int[] matchedIndices = CollectMatchedIndices(snapshot, filterText, token);
+            int filteredVisibleCount = Math.Min(matchedIndices.Length, MaxVisibleRows);
 
-            string filteredTruncationMessage = matchedCount > MaxVisibleRows
+            string filteredTruncationMessage = matchedIndices.Length > MaxVisibleRows
                 ? $"一致件数が多いため先頭 {MaxVisibleRows:N0} 件だけ表示しています。"
                 : string.Empty;
 
-            return FilterResult.Filtered(matches.ToArray(), matchedCount, filteredTruncationMessage);
+            return FilterResult.Filtered(matchedIndices, filteredVisibleCount, matchedIndices.Length, filteredTruncationMessage);
+        }
+
+        private static int[] CollectMatchedIndices(ImageBrowserSnapshot snapshot, string filterText, CancellationToken token)
+        {
+            if (snapshot.FullPaths.Length < ParallelFilterThreshold)
+            {
+                return CollectMatchedIndicesSequential(snapshot, filterText, token);
+            }
+
+            return CollectMatchedIndicesParallel(snapshot, filterText, token);
+        }
+
+        private static int[] CollectMatchedIndicesSequential(ImageBrowserSnapshot snapshot, string filterText, CancellationToken token)
+        {
+            var matches = new List<int>();
+            for (int index = 0; index < snapshot.FullPaths.Length; index++)
+            {
+                token.ThrowIfCancellationRequested();
+                if (IsPathMatch(snapshot, filterText, index))
+                {
+                    matches.Add(index);
+                }
+            }
+
+            return matches.ToArray();
+        }
+
+        private static int[] CollectMatchedIndicesParallel(ImageBrowserSnapshot snapshot, string filterText, CancellationToken token)
+        {
+            var partitionResults = new ConcurrentBag<MatchedChunk>();
+            int rangeSize = Math.Max(2048, snapshot.FullPaths.Length / Math.Max(Environment.ProcessorCount * 8, 1));
+            var partitions = Partitioner.Create(0, snapshot.FullPaths.Length, rangeSize);
+            var options = new ParallelOptions
+            {
+                CancellationToken = token,
+                MaxDegreeOfParallelism = Environment.ProcessorCount
+            };
+
+            Parallel.ForEach(
+                partitions,
+                options,
+                range =>
+                {
+                    var localMatches = new List<int>();
+                    for (int index = range.Item1; index < range.Item2; index++)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        if (IsPathMatch(snapshot, filterText, index))
+                        {
+                            localMatches.Add(index);
+                        }
+                    }
+
+                    partitionResults.Add(new MatchedChunk(range.Item1, localMatches.ToArray()));
+                });
+
+            MatchedChunk[] orderedChunks = partitionResults.ToArray();
+            Array.Sort(orderedChunks, (left, right) => left.StartIndex.CompareTo(right.StartIndex));
+
+            int totalMatchCount = 0;
+            foreach (MatchedChunk chunk in orderedChunks)
+            {
+                totalMatchCount += chunk.Indices.Length;
+            }
+
+            var matches = new int[totalMatchCount];
+            int offset = 0;
+            foreach (MatchedChunk chunk in orderedChunks)
+            {
+                Array.Copy(chunk.Indices, 0, matches, offset, chunk.Indices.Length);
+                offset += chunk.Indices.Length;
+            }
+
+            return matches;
+        }
+
+        private static bool IsPathMatch(ImageBrowserSnapshot snapshot, string filterText, int index)
+        {
+            string fileName = snapshot.FileNames[index];
+            if (!string.IsNullOrEmpty(fileName) &&
+                fileName.IndexOf(filterText, StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return true;
+            }
+
+            string path = snapshot.FullPaths[index];
+            return path.IndexOf(filterText, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private void RestoreSelectedRow(string preferredSelectedPath)
@@ -456,19 +542,6 @@ namespace ImageMove
             if (directRowIndex >= 0)
             {
                 SelectRow(directRowIndex);
-                return;
-            }
-
-            for (int rowIndex = 0; rowIndex < filteredIndices.Length; rowIndex++)
-            {
-                string path = currentSnapshot.FullPaths[filteredIndices[rowIndex]];
-                if (!string.Equals(path, targetPath, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                SelectRow(rowIndex);
-                break;
             }
         }
 
@@ -686,11 +759,31 @@ namespace ImageMove
                 return snapshot.FullPaths.ToArray();
             }
 
-            return snapshot.FullPaths
-                .Where(path =>
-                    path.IndexOf(filterText, StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    Path.GetFileName(path).IndexOf(filterText, StringComparison.OrdinalIgnoreCase) >= 0)
-                .ToArray();
+            if (!filterInProgress && string.Equals(appliedFilterText, filterText, StringComparison.Ordinal))
+            {
+                if (matchedRowCount == 0)
+                {
+                    return Array.Empty<string>();
+                }
+
+                int count = filteredIndices.Length;
+                var filteredPaths = new string[count];
+                for (int index = 0; index < count; index++)
+                {
+                    filteredPaths[index] = snapshot.FullPaths[filteredIndices[index]];
+                }
+
+                return filteredPaths;
+            }
+
+            int[] matchedIndices = CollectMatchedIndices(snapshot, filterText, CancellationToken.None);
+            var matchedPaths = new string[matchedIndices.Length];
+            for (int index = 0; index < matchedIndices.Length; index++)
+            {
+                matchedPaths[index] = snapshot.FullPaths[matchedIndices[index]];
+            }
+
+            return matchedPaths;
         }
 
         private void ImageGrid_CurrentCellDirtyStateChanged(object sender, EventArgs e)
@@ -761,29 +854,28 @@ namespace ImageMove
 
         private int TryResolveDirectRowIndex(string targetPath)
         {
-            if (!showAllRows)
+            if (!currentSnapshot.TryGetAbsoluteIndex(targetPath, out int absoluteIndex))
             {
                 return -1;
             }
 
-            if (currentSnapshot.CurrentIndex >= visibleStartIndex &&
-                currentSnapshot.CurrentIndex < visibleStartIndex + visibleRowCount &&
-                currentSnapshot.CurrentIndex < currentSnapshot.FullPaths.Length &&
-                string.Equals(currentSnapshot.FullPaths[currentSnapshot.CurrentIndex], targetPath, StringComparison.OrdinalIgnoreCase))
+            if (showAllRows)
             {
-                return currentSnapshot.CurrentIndex - visibleStartIndex;
+                if (absoluteIndex < visibleStartIndex || absoluteIndex >= visibleStartIndex + visibleRowCount)
+                {
+                    return -1;
+                }
+
+                return absoluteIndex - visibleStartIndex;
             }
 
-            int absoluteIndex = Array.FindIndex(
-                currentSnapshot.FullPaths,
-                path => string.Equals(path, targetPath, StringComparison.OrdinalIgnoreCase));
-
-            if (absoluteIndex < visibleStartIndex || absoluteIndex >= visibleStartIndex + visibleRowCount)
+            int filteredRowIndex = Array.BinarySearch(filteredIndices, absoluteIndex);
+            if (filteredRowIndex < 0 || filteredRowIndex >= visibleRowCount)
             {
                 return -1;
             }
 
-            return absoluteIndex - visibleStartIndex;
+            return filteredRowIndex;
         }
 
         private int GetMasterIndex(int rowIndex)
@@ -1039,6 +1131,7 @@ namespace ImageMove
     internal sealed class ImageBrowserSnapshot
     {
         internal static readonly ImageBrowserSnapshot Empty = new ImageBrowserSnapshot(Array.Empty<string>(), string.Empty, string.Empty, -1);
+        private readonly Dictionary<string, int> pathToIndexMap;
 
         internal ImageBrowserSnapshot(string[] fullPaths, string sourceRoot, string currentPath, int currentIndex)
         {
@@ -1046,15 +1139,69 @@ namespace ImageMove
             SourceRoot = sourceRoot ?? string.Empty;
             CurrentPath = currentPath ?? string.Empty;
             CurrentIndex = currentIndex;
+            FileNames = BuildFileNames(FullPaths);
+            pathToIndexMap = BuildPathToIndexMap(FullPaths);
         }
 
         internal string[] FullPaths { get; }
+
+        internal string[] FileNames { get; }
 
         internal string SourceRoot { get; }
 
         internal string CurrentPath { get; }
 
         internal int CurrentIndex { get; }
+
+        internal bool TryGetAbsoluteIndex(string path, out int index)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                index = -1;
+                return false;
+            }
+
+            return pathToIndexMap.TryGetValue(path, out index);
+        }
+
+        private static string[] BuildFileNames(string[] fullPaths)
+        {
+            if (fullPaths == null || fullPaths.Length == 0)
+            {
+                return Array.Empty<string>();
+            }
+
+            var fileNames = new string[fullPaths.Length];
+            for (int index = 0; index < fullPaths.Length; index++)
+            {
+                string path = fullPaths[index];
+                fileNames[index] = string.IsNullOrWhiteSpace(path) ? string.Empty : Path.GetFileName(path) ?? string.Empty;
+            }
+
+            return fileNames;
+        }
+
+        private static Dictionary<string, int> BuildPathToIndexMap(string[] fullPaths)
+        {
+            var map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            if (fullPaths == null)
+            {
+                return map;
+            }
+
+            for (int index = 0; index < fullPaths.Length; index++)
+            {
+                string path = fullPaths[index];
+                if (string.IsNullOrWhiteSpace(path) || map.ContainsKey(path))
+                {
+                    continue;
+                }
+
+                map[path] = index;
+            }
+
+            return map;
+        }
     }
 
     internal sealed class ImageBrowserItem
@@ -1105,10 +1252,23 @@ namespace ImageMove
             return new FilterResult(true, Array.Empty<int>(), rowCount, startIndex, matchedCount, truncationMessage);
         }
 
-        internal static FilterResult Filtered(int[] indices, int matchedCount, string truncationMessage)
+        internal static FilterResult Filtered(int[] indices, int rowCount, int matchedCount, string truncationMessage)
         {
-            return new FilterResult(false, indices, indices?.Length ?? 0, 0, matchedCount, truncationMessage);
+            return new FilterResult(false, indices, rowCount, 0, matchedCount, truncationMessage);
         }
+    }
+
+    internal sealed class MatchedChunk
+    {
+        internal MatchedChunk(int startIndex, int[] indices)
+        {
+            StartIndex = startIndex;
+            Indices = indices ?? Array.Empty<int>();
+        }
+
+        internal int StartIndex { get; }
+
+        internal int[] Indices { get; }
     }
 
     internal sealed class DestinationChoice
