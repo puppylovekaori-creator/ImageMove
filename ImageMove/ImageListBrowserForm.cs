@@ -81,7 +81,6 @@ namespace ImageMove
                 Dock = DockStyle.Fill
             };
             filterTextBox.TextChanged += FilterTextBox_TextChanged;
-            filterTextBox.KeyDown += FilterTextBox_KeyDown;
             filterPanel.Controls.Add(filterTextBox, 1, 0);
 
             var applyFilterButton = new Button
@@ -340,17 +339,6 @@ namespace ImageMove
         private void FilterTextBox_TextChanged(object sender, EventArgs e)
         {
             UpdateSummaryLabel();
-        }
-
-        private void FilterTextBox_KeyDown(object sender, KeyEventArgs e)
-        {
-            if (e.KeyCode != Keys.Enter)
-            {
-                return;
-            }
-
-            e.SuppressKeyPress = true;
-            ApplyCurrentFilter();
         }
 
         private void BeginApplyFilterAsync(string filterText, string preferredSelectedPath)
