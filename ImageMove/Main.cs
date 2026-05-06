@@ -27,10 +27,14 @@ namespace ImageMove
         private const long MaxCachedImageBytes = 1536L * 1024L * 1024L;
         private const int PrefetchDelayMs = 180;
         private const int BrowserRefreshDelayMs = 120;
+        private const int SettingsSaveDelayMs = 400;
 
         #region フィールド
         /// <summary> ロガー </summary>
         private static readonly ILog logger = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
+
+        /// <summary> 設定保存用シリアライザ </summary>
+        private static readonly XmlSerializer SaveSettingSerializer = new XmlSerializer(typeof(SaveSetting));
 
         /// <summary> サポートする画像拡張子 </summary>
         private static readonly string[] SupportedImageExtensions = { ".jpg", ".jpeg", ".png", ".bmp", ".gif" };
@@ -101,6 +105,9 @@ namespace ImageMove
         /// <summary> 一覧別窓再構築を遅延させるタイマー </summary>
         private readonly Timer browserRefreshTimer;
 
+        /// <summary> 設定保存を遅延させるタイマー </summary>
+        private readonly Timer settingsSaveTimer;
+
         /// <summary> 現在押しっぱなし中のボタン </summary>
         private Button activeRepeatButton;
 
@@ -148,6 +155,9 @@ namespace ImageMove
 
         /// <summary> 次に先読みしたい中心位置 </summary>
         private int pendingPrefetchCenterIndex = -1;
+
+        /// <summary> 遅延保存待ちの設定があるか </summary>
+        private bool pendingSettingsSave;
         #endregion フィールド
 
         #region コンストラクタ
@@ -189,6 +199,11 @@ namespace ImageMove
                 Interval = BrowserRefreshDelayMs
             };
             browserRefreshTimer.Tick += BrowserRefreshTimer_Tick;
+            settingsSaveTimer = new Timer
+            {
+                Interval = SettingsSaveDelayMs
+            };
+            settingsSaveTimer.Tick += SettingsSaveTimer_Tick;
 
             InitializeUi();
             LoadSettingIfExists();
@@ -389,8 +404,10 @@ namespace ImageMove
             StopRepeatAction();
             prefetchDelayTimer.Stop();
             browserRefreshTimer.Stop();
+            settingsSaveTimer.Stop();
             CancelImagePrefetch();
             ClearImageCache();
+            FlushPendingSettingsSave();
             SaveSettingSafe();
         }
         #endregion イベント
@@ -1124,9 +1141,9 @@ namespace ImageMove
 
             try
             {
-                if (!TryGetCachedImageClone(imagePath, out displayBitmap))
+                if (!TryTakeCachedImage(imagePath, out displayBitmap))
                 {
-                    displayBitmap = LoadDisplayImageAndPopulateCache(imagePath);
+                    displayBitmap = LoadBitmapCopy(imagePath);
                 }
 
                 ReplaceDisplayedImage(displayBitmap);
@@ -1478,7 +1495,7 @@ namespace ImageMove
                 moveHistoryActions.Pop();
                 FocusRestoredImage(action);
                 UpdateUndoState();
-                SaveSettingSafe();
+                RequestSettingsSave();
                 RefreshImageBrowserItemsIfOpen();
             }
             catch (Exception ex)
@@ -1711,6 +1728,7 @@ namespace ImageMove
         {
             try
             {
+                pendingSettingsSave = false;
                 SaveSetting();
             }
             catch (Exception ex)
@@ -1770,10 +1788,9 @@ namespace ImageMove
                   RecentDestinationFolders = recentDestinationFolders.ToList()
               };
 
-            var serializer = new XmlSerializer(typeof(SaveSetting));
             using (var streamWriter = new StreamWriter(settingFileName, false, new UTF8Encoding(false)))
             {
-                serializer.Serialize(streamWriter, setting);
+                SaveSettingSerializer.Serialize(streamWriter, setting);
             }
         }
 
@@ -1782,11 +1799,9 @@ namespace ImageMove
         /// </summary>
         private void LoadSetting()
         {
-            var serializer = new XmlSerializer(typeof(SaveSetting));
-
             using (var streamReader = new StreamReader(settingFileName, new UTF8Encoding(false)))
             {
-                var setting = (SaveSetting)serializer.Deserialize(streamReader);
+                var setting = (SaveSetting)SaveSettingSerializer.Deserialize(streamReader);
 
                 textBox1.Text = NormalizeDirectoryPath(setting.From);
                 textBox2.Text = NormalizeDirectoryPath(setting.Num0);
@@ -1821,6 +1836,35 @@ namespace ImageMove
                 logger.Error("設定保存に失敗しました。", ex);
                 ShowOwnedMessage("設定保存に失敗しました。", AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+        }
+
+        private void RequestSettingsSave()
+        {
+            pendingSettingsSave = true;
+            settingsSaveTimer.Stop();
+            settingsSaveTimer.Start();
+        }
+
+        private void FlushPendingSettingsSave()
+        {
+            if (!pendingSettingsSave)
+            {
+                return;
+            }
+
+            settingsSaveTimer.Stop();
+            SaveSettingSafe();
+        }
+
+        private void SettingsSaveTimer_Tick(object sender, EventArgs e)
+        {
+            settingsSaveTimer.Stop();
+            if (!pendingSettingsSave)
+            {
+                return;
+            }
+
+            SaveSettingSafe();
         }
 
         /// <summary>
@@ -1909,7 +1953,7 @@ namespace ImageMove
                 TrimRecentFolderHistory(recentSourceFolders);
                 TrimRecentFolderHistory(recentDestinationFolders);
                 RefreshRecentFolderComboBoxItems();
-                SaveSettingSafe();
+                RequestSettingsSave();
             }
         }
         #endregion 設定保存・復元
@@ -2291,35 +2335,6 @@ namespace ImageMove
         }
 
         /// <summary>
-        /// キャッシュを含めて表示用画像を読み込む
-        /// </summary>
-        private Bitmap LoadDisplayImageAndPopulateCache(string imagePath)
-        {
-            Bitmap cacheBitmap = LoadBitmapCopy(imagePath);
-            Bitmap displayBitmap = null;
-
-            try
-            {
-                displayBitmap = (Bitmap)cacheBitmap.Clone();
-                if (TryAddCachedImage(imagePath, cacheBitmap))
-                {
-                    cacheBitmap = null;
-                }
-
-                return displayBitmap;
-            }
-            catch
-            {
-                displayBitmap?.Dispose();
-                throw;
-            }
-            finally
-            {
-                cacheBitmap?.Dispose();
-            }
-        }
-
-        /// <summary>
         /// 画像ファイルを複製可能な Bitmap として読み込む
         /// </summary>
         private Bitmap LoadBitmapCopy(string imagePath)
@@ -2332,9 +2347,9 @@ namespace ImageMove
         }
 
         /// <summary>
-        /// 表示用にキャッシュ画像を複製して返す
+        /// キャッシュ画像を取り出して表示側へ所有権を渡す
         /// </summary>
-        private bool TryGetCachedImageClone(string imagePath, out Bitmap displayBitmap)
+        private bool TryTakeCachedImage(string imagePath, out Bitmap displayBitmap)
         {
             lock (imageCacheSync)
             {
@@ -2344,8 +2359,15 @@ namespace ImageMove
                     return false;
                 }
 
-                TouchCachedImageEntry(imagePath);
-                displayBitmap = (Bitmap)entry.Bitmap.Clone();
+                imageCacheEntries.Remove(imagePath);
+                if (imageCacheNodes.TryGetValue(imagePath, out LinkedListNode<string> node))
+                {
+                    imageCacheLru.Remove(node);
+                    imageCacheNodes.Remove(imagePath);
+                }
+
+                cachedImageBytes = Math.Max(0, cachedImageBytes - entry.EstimatedBytes);
+                displayBitmap = entry.Bitmap;
                 return true;
             }
         }
