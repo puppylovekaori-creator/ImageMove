@@ -375,7 +375,7 @@ namespace ImageMove
                         if (task.IsFaulted)
                         {
                             UpdateSummaryLabel();
-                            MessageBox.Show("画像一覧の絞り込み中にエラーが発生しました。", "画像一覧", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                            ShowOwnedMessage("画像一覧の絞り込み中にエラーが発生しました。", "画像一覧", MessageBoxButtons.OK, MessageBoxIcon.Error);
                             return;
                         }
 
@@ -387,6 +387,7 @@ namespace ImageMove
                         visibleStartIndex = result.StartIndex;
                         matchedRowCount = result.MatchedCount;
                         truncationMessage = result.TruncationMessage;
+                        relativePathCache.Clear();
                         imageGrid.SuspendLayout();
                         try
                         {
@@ -573,13 +574,13 @@ namespace ImageMove
             string targetPath = GetSelectedPath();
             if (string.IsNullOrWhiteSpace(targetPath))
             {
-                MessageBox.Show("表示したい画像を選択してください。", "画像一覧", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ShowOwnedMessage("表示したい画像を選択してください。", "画像一覧", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
             if (!ownerMain.ShowImageByPath(targetPath))
             {
-                MessageBox.Show("選択した画像は現在の一覧にありません。", "画像一覧", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ShowOwnedMessage("選択した画像は現在の一覧にありません。", "画像一覧", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
@@ -595,7 +596,7 @@ namespace ImageMove
 
             if (selectedPaths.Count == 0)
             {
-                MessageBox.Show("一括移動したい画像にチェックを付けてください。", "画像一覧", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ShowOwnedMessage("一括移動したい画像にチェックを付けてください。", "画像一覧", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
@@ -640,7 +641,7 @@ namespace ImageMove
                         message += Environment.NewLine + string.Join(Environment.NewLine, result.SkippedMessages.Take(5));
                     }
 
-                    MessageBox.Show(message, "画像一覧", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    ShowOwnedMessage(message, "画像一覧", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 finally
                 {
@@ -947,6 +948,21 @@ namespace ImageMove
             return relativePath;
         }
 
+        private void ShowOwnedMessage(string text, string caption, MessageBoxButtons buttons, MessageBoxIcon icon)
+        {
+            IWin32Window ownerWindow;
+            if (ownerMain != null && !ownerMain.IsDisposed)
+            {
+                ownerWindow = ownerMain;
+            }
+            else
+            {
+                ownerWindow = this;
+            }
+
+            MessageBox.Show(ownerWindow, text, caption, buttons, icon);
+        }
+
         private static string BuildRelativePath(string sourceRoot, string fullPath)
         {
             try
@@ -1135,7 +1151,7 @@ namespace ImageMove
                 var choice = configuredDestinationComboBox.SelectedItem as DestinationChoice;
                 if (choice == null)
                 {
-                    MessageBox.Show("親画面で設定済みの移動先を選択してください。", "一括移動", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    MessageBox.Show(this, "親画面で設定済みの移動先を選択してください。", "一括移動", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
                 }
 
@@ -1149,7 +1165,7 @@ namespace ImageMove
             string customPath = (customFolderTextBox.Text ?? string.Empty).Trim().Trim('"');
             if (string.IsNullOrWhiteSpace(customPath) || !Directory.Exists(customPath))
             {
-                MessageBox.Show("任意フォルダを指定してください。", "一括移動", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show(this, "任意フォルダを指定してください。", "一括移動", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 

@@ -938,7 +938,7 @@ namespace ImageMove
 
                 if (!TryGetExistingDirectory(textBox1.Text, out string sourceDirectory))
                 {
-                    MessageBox.Show("読み込みフォルダを指定してください。");
+                    ShowOwnedMessage("読み込みフォルダを指定してください。");
                     return;
                 }
 
@@ -961,7 +961,7 @@ namespace ImageMove
             }
             catch (Exception ex)
             {
-                MessageBox.Show("画像の読み込みに失敗しました。");
+                ShowOwnedMessage("画像の読み込みに失敗しました。");
                 logger.Fatal("画像読み込み / 再読み込みでエラーが発生しました。", ex);
             }
             finally
@@ -1114,7 +1114,7 @@ namespace ImageMove
             {
                 displayBitmap?.Dispose();
                 logger.Fatal(string.Format("画像表示でエラーが発生しました。 Path={0}", imagePath), ex);
-                MessageBox.Show("画像の表示に失敗しました。");
+                ShowOwnedMessage("画像の表示に失敗しました。");
             }
         }
 
@@ -1268,13 +1268,13 @@ namespace ImageMove
             {
                 if (!HasCurrentImage())
                 {
-                    MessageBox.Show("移動する画像がありません。");
+                    ShowOwnedMessage("移動する画像がありません。");
                     return;
                 }
 
                 if (!TryGetExistingDirectory(destinationTextBox.Text, out string destinationDirectory))
                 {
-                    MessageBox.Show("移動先フォルダを指定してください。");
+                    ShowOwnedMessage("移動先フォルダを指定してください。");
                     return;
                 }
 
@@ -1285,13 +1285,13 @@ namespace ImageMove
 
                 if (result.MovedCount == 0 && result.SkippedMessages.Count > 0)
                 {
-                    MessageBox.Show(result.SkippedMessages[0], AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    ShowOwnedMessage(result.SkippedMessages[0], AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
             }
             catch (Exception ex)
             {
                 logger.Fatal("画像移動でエラーが発生しました。", ex);
-                MessageBox.Show("画像の移動に失敗しました。");
+                ShowOwnedMessage("画像の移動に失敗しました。");
             }
         }
         #endregion 画像移動
@@ -1320,7 +1320,7 @@ namespace ImageMove
             catch (Exception ex)
             {
                 logger.Fatal("フォルダ選択でエラーが発生しました。", ex);
-                MessageBox.Show("フォルダの選択に失敗しました。");
+                ShowOwnedMessage("フォルダの選択に失敗しました。");
             }
         }
 
@@ -1408,7 +1408,7 @@ namespace ImageMove
         {
             if (moveHistoryActions.Count == 0)
             {
-                MessageBox.Show("元に戻せる移動がありません。", AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ShowOwnedMessage("元に戻せる移動がありません。", AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
@@ -1416,7 +1416,7 @@ namespace ImageMove
             string validationMessage = ValidateUndoAction(action);
             if (!string.IsNullOrWhiteSpace(validationMessage))
             {
-                MessageBox.Show(validationMessage, AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                ShowOwnedMessage(validationMessage, AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
@@ -1444,7 +1444,7 @@ namespace ImageMove
             catch (Exception ex)
             {
                 logger.Error("アンドゥに失敗しました。", ex);
-                MessageBox.Show("元に戻す処理に失敗しました。", AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                ShowOwnedMessage("元に戻す処理に失敗しました。", AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -1762,12 +1762,12 @@ namespace ImageMove
             try
             {
                 SaveSetting();
-                MessageBox.Show("設定を保存しました。", AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ShowOwnedMessage("設定を保存しました。", AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
                 logger.Error("設定保存に失敗しました。", ex);
-                MessageBox.Show("設定保存に失敗しました。", AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                ShowOwnedMessage("設定保存に失敗しました。", AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -1778,7 +1778,7 @@ namespace ImageMove
         {
             if (!File.Exists(settingFileName))
             {
-                MessageBox.Show("設定ファイルが見つかりません。", AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ShowOwnedMessage("設定ファイルが見つかりません。", AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
@@ -1786,12 +1786,12 @@ namespace ImageMove
             {
                 LoadSetting();
                 UpdateDestinationActionButtons();
-                MessageBox.Show("設定を読み込みました。", AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ShowOwnedMessage("設定を読み込みました。", AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
                 logger.Error("設定読み込みに失敗しました。", ex);
-                MessageBox.Show("設定読み込みに失敗しました。", AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                ShowOwnedMessage("設定読み込みに失敗しました。", AppDisplayName, MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -2162,6 +2162,11 @@ namespace ImageMove
             }
 
             return imagePaths[currentImageIndex];
+        }
+
+        private void ShowOwnedMessage(string text, string caption = AppDisplayName, MessageBoxButtons buttons = MessageBoxButtons.OK, MessageBoxIcon icon = MessageBoxIcon.Information)
+        {
+            MessageBox.Show(this, text, caption, buttons, icon);
         }
 
         /// <summary>
