@@ -26,10 +26,10 @@ namespace ImageMove
         private CancellationTokenSource filterCts;
         private ImageBrowserSnapshot currentSnapshot = ImageBrowserSnapshot.Empty;
         private int[] filteredIndices = Array.Empty<int>();
-        private readonly Dictionary<int, string> relativePathCache = new Dictionary<int, string>();
         private string currentPath = string.Empty;
         private string pendingPreferredSelectedPath = string.Empty;
         private string appliedFilterText = string.Empty;
+        private string[] appliedFilterSnapshotPaths = Array.Empty<string>();
         private bool filterInProgress;
         private bool showAllRows = true;
         private int visibleRowCount;
@@ -304,7 +304,6 @@ namespace ImageMove
             string selectedPath = GetSelectedPath();
             currentSnapshot = ownerMain.GetImageBrowserSnapshot();
             currentPath = currentSnapshot.CurrentPath ?? string.Empty;
-            relativePathCache.Clear();
             BeginApplyFilterAsync((filterTextBox.Text ?? string.Empty).Trim(), selectedPath);
         }
 
@@ -349,12 +348,13 @@ namespace ImageMove
             filterCts = new CancellationTokenSource();
             CancellationToken token = filterCts.Token;
             ImageBrowserSnapshot snapshot = currentSnapshot;
+            FilterSeed filterSeed = CreateFilterSeed(snapshot, filterText);
 
             filterInProgress = true;
             UpdateUiBusyState();
             UpdateSummaryLabel();
 
-            Task.Run(() => BuildFilteredRows(snapshot, filterText, token), token)
+            Task.Run(() => BuildFilteredRows(snapshot, filterText, filterSeed, token), token)
                 .ContinueWith(
                     task =>
                     {
@@ -381,13 +381,13 @@ namespace ImageMove
 
                         FilterResult result = task.Result;
                         appliedFilterText = filterText;
+                        appliedFilterSnapshotPaths = snapshot.FullPaths;
                         showAllRows = result.ShowAllRows;
                         filteredIndices = result.Indices;
                         visibleRowCount = result.RowCount;
                         visibleStartIndex = result.StartIndex;
                         matchedRowCount = result.MatchedCount;
                         truncationMessage = result.TruncationMessage;
-                        relativePathCache.Clear();
                         imageGrid.SuspendLayout();
                         try
                         {
@@ -413,7 +413,29 @@ namespace ImageMove
             BeginApplyFilterAsync((filterTextBox.Text ?? string.Empty).Trim(), pendingPreferredSelectedPath);
         }
 
-        private static FilterResult BuildFilteredRows(ImageBrowserSnapshot snapshot, string filterText, CancellationToken token)
+        private FilterSeed CreateFilterSeed(ImageBrowserSnapshot snapshot, string filterText)
+        {
+            if (snapshot == null || snapshot.FullPaths.Length == 0 || string.IsNullOrWhiteSpace(filterText))
+            {
+                return FilterSeed.Empty;
+            }
+
+            if (showAllRows ||
+                string.IsNullOrWhiteSpace(appliedFilterText) ||
+                !ReferenceEquals(snapshot.FullPaths, appliedFilterSnapshotPaths))
+            {
+                return FilterSeed.Empty;
+            }
+
+            if (!filterText.StartsWith(appliedFilterText, StringComparison.OrdinalIgnoreCase))
+            {
+                return FilterSeed.Empty;
+            }
+
+            return new FilterSeed(appliedFilterText, filteredIndices, true);
+        }
+
+        private static FilterResult BuildFilteredRows(ImageBrowserSnapshot snapshot, string filterText, FilterSeed filterSeed, CancellationToken token)
         {
             string[] paths = snapshot.FullPaths;
             if (paths.Length == 0)
@@ -436,7 +458,7 @@ namespace ImageMove
                 return FilterResult.AllRows(visibleCount, startIndex, paths.Length, truncationMessage);
             }
 
-            int[] matchedIndices = CollectMatchedIndices(snapshot, filterText, token);
+            int[] matchedIndices = CollectMatchedIndices(snapshot, filterText, filterSeed, token);
             int filteredVisibleCount = Math.Min(matchedIndices.Length, MaxVisibleRows);
 
             string filteredTruncationMessage = matchedIndices.Length > MaxVisibleRows
@@ -446,36 +468,57 @@ namespace ImageMove
             return FilterResult.Filtered(matchedIndices, filteredVisibleCount, matchedIndices.Length, filteredTruncationMessage);
         }
 
-        private static int[] CollectMatchedIndices(ImageBrowserSnapshot snapshot, string filterText, CancellationToken token)
+        private static int[] CollectMatchedIndices(ImageBrowserSnapshot snapshot, string filterText, FilterSeed filterSeed, CancellationToken token)
         {
-            if (snapshot.FullPaths.Length < ParallelFilterThreshold)
+            int[] candidateIndices = filterSeed != null && filterSeed.CanReuseFor(filterText)
+                ? filterSeed.CandidateIndices
+                : null;
+            int candidateCount = candidateIndices != null ? candidateIndices.Length : snapshot.FullPaths.Length;
+            if (candidateCount < ParallelFilterThreshold)
             {
-                return CollectMatchedIndicesSequential(snapshot, filterText, token);
+                return CollectMatchedIndicesSequential(snapshot, filterText, candidateIndices, token);
             }
 
-            return CollectMatchedIndicesParallel(snapshot, filterText, token);
+            return CollectMatchedIndicesParallel(snapshot, filterText, candidateIndices, token);
         }
 
-        private static int[] CollectMatchedIndicesSequential(ImageBrowserSnapshot snapshot, string filterText, CancellationToken token)
+        private static int[] CollectMatchedIndicesSequential(ImageBrowserSnapshot snapshot, string filterText, int[] candidateIndices, CancellationToken token)
         {
-            var matches = new List<int>();
-            for (int index = 0; index < snapshot.FullPaths.Length; index++)
+            int initialCapacity = candidateIndices != null ? Math.Min(candidateIndices.Length, 4096) : 256;
+            var matches = new List<int>(initialCapacity);
+            if (candidateIndices == null)
+            {
+                for (int index = 0; index < snapshot.FullPaths.Length; index++)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (IsPathMatch(snapshot, filterText, index))
+                    {
+                        matches.Add(index);
+                    }
+                }
+
+                return matches.ToArray();
+            }
+
+            for (int index = 0; index < candidateIndices.Length; index++)
             {
                 token.ThrowIfCancellationRequested();
-                if (IsPathMatch(snapshot, filterText, index))
+                int masterIndex = candidateIndices[index];
+                if (IsPathMatch(snapshot, filterText, masterIndex))
                 {
-                    matches.Add(index);
+                    matches.Add(masterIndex);
                 }
             }
 
             return matches.ToArray();
         }
 
-        private static int[] CollectMatchedIndicesParallel(ImageBrowserSnapshot snapshot, string filterText, CancellationToken token)
+        private static int[] CollectMatchedIndicesParallel(ImageBrowserSnapshot snapshot, string filterText, int[] candidateIndices, CancellationToken token)
         {
             var partitionResults = new ConcurrentBag<MatchedChunk>();
-            int rangeSize = Math.Max(2048, snapshot.FullPaths.Length / Math.Max(Environment.ProcessorCount * 8, 1));
-            var partitions = Partitioner.Create(0, snapshot.FullPaths.Length, rangeSize);
+            int candidateCount = candidateIndices != null ? candidateIndices.Length : snapshot.FullPaths.Length;
+            int rangeSize = Math.Max(2048, candidateCount / Math.Max(Environment.ProcessorCount * 8, 1));
+            var partitions = Partitioner.Create(0, candidateCount, rangeSize);
             var options = new ParallelOptions
             {
                 CancellationToken = token,
@@ -487,13 +530,15 @@ namespace ImageMove
                 options,
                 range =>
                 {
-                    var localMatches = new List<int>();
+                    int localCapacity = Math.Min(range.Item2 - range.Item1, 2048);
+                    var localMatches = new List<int>(localCapacity);
                     for (int index = range.Item1; index < range.Item2; index++)
                     {
                         token.ThrowIfCancellationRequested();
-                        if (IsPathMatch(snapshot, filterText, index))
+                        int masterIndex = candidateIndices != null ? candidateIndices[index] : index;
+                        if (IsPathMatch(snapshot, filterText, masterIndex))
                         {
-                            localMatches.Add(index);
+                            localMatches.Add(masterIndex);
                         }
                     }
 
@@ -778,18 +823,42 @@ namespace ImageMove
             {
                 int count = visibleRowCount;
                 string[] paths = new string[count];
+                int written = 0;
                 for (int rowIndex = 0; rowIndex < count; rowIndex++)
                 {
                     int masterIndex = GetMasterIndex(rowIndex);
-                    paths[rowIndex] = masterIndex >= 0 ? snapshot.FullPaths[masterIndex] : string.Empty;
+                    if (masterIndex < 0)
+                    {
+                        continue;
+                    }
+
+                    string path = snapshot.FullPaths[masterIndex];
+                    if (string.IsNullOrWhiteSpace(path))
+                    {
+                        continue;
+                    }
+
+                    paths[written++] = path;
                 }
 
-                return paths.Where(path => !string.IsNullOrWhiteSpace(path)).ToArray();
+                if (written == count)
+                {
+                    return paths;
+                }
+
+                if (written == 0)
+                {
+                    return Array.Empty<string>();
+                }
+
+                var compactedPaths = new string[written];
+                Array.Copy(paths, compactedPaths, written);
+                return compactedPaths;
             }
 
             if (string.IsNullOrWhiteSpace(filterText))
             {
-                return snapshot.FullPaths.ToArray();
+                return snapshot.FullPaths;
             }
 
             if (!filterInProgress && string.Equals(appliedFilterText, filterText, StringComparison.Ordinal))
@@ -809,7 +878,7 @@ namespace ImageMove
                 return filteredPaths;
             }
 
-            int[] matchedIndices = CollectMatchedIndices(snapshot, filterText, CancellationToken.None);
+            int[] matchedIndices = CollectMatchedIndices(snapshot, filterText, FilterSeed.Empty, CancellationToken.None);
             var matchedPaths = new string[matchedIndices.Length];
             for (int index = 0; index < matchedIndices.Length; index++)
             {
@@ -847,10 +916,10 @@ namespace ImageMove
                     e.Value = string.Equals(path, currentPath, StringComparison.OrdinalIgnoreCase) ? "●" : string.Empty;
                     break;
                 case "fileName":
-                    e.Value = Path.GetFileName(path);
+                    e.Value = currentSnapshot.FileNames[masterIndex];
                     break;
                 case "relativePath":
-                    e.Value = GetRelativePath(masterIndex, path);
+                    e.Value = currentSnapshot.GetRelativePath(masterIndex);
                     break;
                 case "fullPath":
                     e.Value = path;
@@ -936,18 +1005,6 @@ namespace ImageMove
             }
         }
 
-        private string GetRelativePath(int masterIndex, string fullPath)
-        {
-            if (relativePathCache.TryGetValue(masterIndex, out string cachedValue))
-            {
-                return cachedValue;
-            }
-
-            string relativePath = BuildRelativePath(currentSnapshot.SourceRoot, fullPath);
-            relativePathCache[masterIndex] = relativePath;
-            return relativePath;
-        }
-
         private void ShowOwnedMessage(string text, string caption, MessageBoxButtons buttons, MessageBoxIcon icon)
         {
             IWin32Window ownerWindow;
@@ -961,32 +1018,6 @@ namespace ImageMove
             }
 
             MessageBox.Show(ownerWindow, text, caption, buttons, icon);
-        }
-
-        private static string BuildRelativePath(string sourceRoot, string fullPath)
-        {
-            try
-            {
-                if (!string.IsNullOrWhiteSpace(sourceRoot) && Directory.Exists(sourceRoot))
-                {
-                    string normalizedRoot = Path.GetFullPath(sourceRoot);
-                    if (!normalizedRoot.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal))
-                    {
-                        normalizedRoot += Path.DirectorySeparatorChar;
-                    }
-
-                    Uri rootUri = new Uri(normalizedRoot);
-                    Uri pathUri = new Uri(Path.GetFullPath(fullPath));
-                    string relativePath = Uri.UnescapeDataString(rootUri.MakeRelativeUri(pathUri).ToString());
-                    return relativePath.Replace('/', Path.DirectorySeparatorChar);
-                }
-            }
-            catch
-            {
-                // 相対パス化に失敗した場合はフルパスを返す
-            }
-
-            return fullPath;
         }
     }
 
@@ -1180,6 +1211,7 @@ namespace ImageMove
     {
         internal static readonly ImageBrowserSnapshot Empty = new ImageBrowserSnapshot(Array.Empty<string>(), string.Empty, string.Empty, -1);
         private readonly Dictionary<string, int> pathToIndexMap;
+        private readonly string[] relativePathCache;
 
         internal ImageBrowserSnapshot(string[] fullPaths, string sourceRoot, string currentPath, int currentIndex)
             : this(fullPaths, null, null, sourceRoot, currentPath, currentIndex)
@@ -1201,6 +1233,7 @@ namespace ImageMove
             FileNames = fileNames != null && fileNames.Length == FullPaths.Length
                 ? fileNames
                 : BuildFileNames(FullPaths);
+            relativePathCache = new string[FullPaths.Length];
             pathToIndexMap = existingPathToIndexMap != null && existingPathToIndexMap.Count > 0
                 ? existingPathToIndexMap
                 : BuildPathToIndexMap(FullPaths);
@@ -1216,6 +1249,24 @@ namespace ImageMove
 
         internal int CurrentIndex { get; }
 
+        internal string GetRelativePath(int index)
+        {
+            if (index < 0 || index >= FullPaths.Length)
+            {
+                return string.Empty;
+            }
+
+            string cachedPath = relativePathCache[index];
+            if (!string.IsNullOrEmpty(cachedPath))
+            {
+                return cachedPath;
+            }
+
+            string relativePath = BuildRelativePath(SourceRoot, FullPaths[index]);
+            relativePathCache[index] = relativePath;
+            return relativePath;
+        }
+
         internal bool TryGetAbsoluteIndex(string path, out int index)
         {
             if (string.IsNullOrWhiteSpace(path))
@@ -1225,6 +1276,32 @@ namespace ImageMove
             }
 
             return pathToIndexMap.TryGetValue(path, out index);
+        }
+
+        private static string BuildRelativePath(string sourceRoot, string fullPath)
+        {
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(sourceRoot) && Directory.Exists(sourceRoot))
+                {
+                    string normalizedRoot = Path.GetFullPath(sourceRoot);
+                    if (!normalizedRoot.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal))
+                    {
+                        normalizedRoot += Path.DirectorySeparatorChar;
+                    }
+
+                    Uri rootUri = new Uri(normalizedRoot);
+                    Uri pathUri = new Uri(Path.GetFullPath(fullPath));
+                    string relativePath = Uri.UnescapeDataString(rootUri.MakeRelativeUri(pathUri).ToString());
+                    return relativePath.Replace('/', Path.DirectorySeparatorChar);
+                }
+            }
+            catch
+            {
+                // 相対パス化に失敗した場合はフルパスを返す
+            }
+
+            return fullPath;
         }
 
         private static string[] BuildFileNames(string[] fullPaths)
@@ -1264,6 +1341,32 @@ namespace ImageMove
             }
 
             return map;
+        }
+    }
+
+    internal sealed class FilterSeed
+    {
+        internal static readonly FilterSeed Empty = new FilterSeed(string.Empty, null, false);
+
+        internal FilterSeed(string baseFilterText, int[] candidateIndices, bool hasCandidateScope)
+        {
+            BaseFilterText = baseFilterText ?? string.Empty;
+            CandidateIndices = candidateIndices;
+            HasCandidateScope = hasCandidateScope;
+        }
+
+        internal string BaseFilterText { get; }
+
+        internal int[] CandidateIndices { get; }
+
+        internal bool HasCandidateScope { get; }
+
+        internal bool CanReuseFor(string filterText)
+        {
+            return HasCandidateScope &&
+                !string.IsNullOrWhiteSpace(BaseFilterText) &&
+                !string.IsNullOrWhiteSpace(filterText) &&
+                filterText.StartsWith(BaseFilterText, StringComparison.OrdinalIgnoreCase);
         }
     }
 

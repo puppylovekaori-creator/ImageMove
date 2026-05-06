@@ -304,17 +304,31 @@ try {
         throw "Expected $expectedVisibleCount visible rows, actual=$visibleCount"
     }
 
+    $filterTerm = 'sample_001999'
     $filterStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-    $filterMethod.Invoke($browserForm, @('1999')) | Out-Null
+    $filterMethod.Invoke($browserForm, @($filterTerm)) | Out-Null
     Wait-Until -TimeoutMs 30000 -Condition { -not [bool]$isFilterMethod.Invoke($browserForm, @()) }
     $filterStopwatch.Stop()
 
     $filteredCount = [int]$rowCountMethod.Invoke($browserForm, @())
-    if ($filteredCount -le 0 -or $filteredCount -gt $ExpectedVisibleRowLimit) {
-        throw "Filtered row count is invalid: $filteredCount"
+    if ($filteredCount -ne 1) {
+        throw "Filtered row count is invalid for '$filterTerm': $filteredCount"
+    }
+
+    $chainTerms = @('sample_001', 'sample_0019', 'sample_00199', 'sample_001999')
+    $chainResults = @()
+    foreach ($term in $chainTerms) {
+        $chainStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+        $filterMethod.Invoke($browserForm, @($term)) | Out-Null
+        Wait-Until -TimeoutMs 30000 -Condition { -not [bool]$isFilterMethod.Invoke($browserForm, @()) }
+        $chainStopwatch.Stop()
+
+        $chainVisibleCount = [int]$rowCountMethod.Invoke($browserForm, @())
+        $chainResults += ("{0}={1}ms/{2}" -f $term, $chainStopwatch.ElapsedMilliseconds, $chainVisibleCount)
     }
 
     Write-Host ("RESULT2: open_ms={0} visible={1} filter_ms={2} filtered={3}" -f $openStopwatch.ElapsedMilliseconds, $visibleCount, $filterStopwatch.ElapsedMilliseconds, $filteredCount)
+    Write-Host ("RESULT2B: {0}" -f ($chainResults -join ', '))
     Write-Host 'IMAGE_MOVE_LARGE_LIST_SMOKE_OK'
 }
 finally {
