@@ -18,13 +18,18 @@ namespace ImageMove
         private readonly Main ownerMain;
         private readonly HashSet<string> checkedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly TextBox filterTextBox;
+        private readonly TableLayoutPanel gridHostLayout;
+        private readonly TableLayoutPanel summaryPanel;
+        private readonly DataGridView summaryGrid;
         private readonly DataGridView imageGrid;
+        private readonly Label summaryGroupLabel;
         private readonly Label summaryLabel;
         private readonly ProgressBar batchMoveProgressBar;
         private readonly Label batchMoveStatusLabel;
         private readonly List<Control> batchMoveBusyControls = new List<Control>();
         private CancellationTokenSource filterCts;
         private ImageBrowserSnapshot currentSnapshot = ImageBrowserSnapshot.Empty;
+        private SequenceSummaryGroup[] summaryGroups = Array.Empty<SequenceSummaryGroup>();
         private int[] filteredIndices = Array.Empty<int>();
         private string currentPath = string.Empty;
         private string pendingPreferredSelectedPath = string.Empty;
@@ -115,6 +120,72 @@ namespace ImageMove
             refreshButton.Click += (_, __) => RefreshItems();
             filterPanel.Controls.Add(refreshButton, 4, 0);
 
+            summaryGroupLabel = new Label
+            {
+                Dock = DockStyle.Fill,
+                Text = "連番サマリ",
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+
+            summaryGrid = new DataGridView
+            {
+                Dock = DockStyle.Fill,
+                AllowUserToAddRows = false,
+                AllowUserToDeleteRows = false,
+                AllowUserToResizeRows = false,
+                AutoGenerateColumns = false,
+                MultiSelect = false,
+                RowHeadersVisible = false,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                EditMode = DataGridViewEditMode.EditOnEnter,
+                VirtualMode = true,
+                ReadOnly = false
+            };
+            summaryGrid.Columns.Add(new DataGridViewCheckBoxColumn
+            {
+                Name = "checked",
+                HeaderText = "選択",
+                Width = 60
+            });
+            summaryGrid.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "count",
+                HeaderText = "件数",
+                Width = 70,
+                ReadOnly = true
+            });
+            summaryGrid.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "checkedCount",
+                HeaderText = "選択済み",
+                Width = 90,
+                ReadOnly = true
+            });
+            summaryGrid.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "groupName",
+                HeaderText = "連番前",
+                Width = 260,
+                ReadOnly = true
+            });
+            summaryGrid.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "sampleFileName",
+                HeaderText = "代表ファイル名",
+                Width = 260,
+                ReadOnly = true
+            });
+            summaryGrid.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "sampleRelativePath",
+                HeaderText = "代表相対パス",
+                AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
+                ReadOnly = true
+            });
+            summaryGrid.CurrentCellDirtyStateChanged += SummaryGrid_CurrentCellDirtyStateChanged;
+            summaryGrid.CellValueNeeded += SummaryGrid_CellValueNeeded;
+            summaryGrid.CellValuePushed += SummaryGrid_CellValuePushed;
+
             imageGrid = new DataGridView
             {
                 Dock = DockStyle.Fill,
@@ -167,6 +238,29 @@ namespace ImageMove
             imageGrid.CellValueNeeded += ImageGrid_CellValueNeeded;
             imageGrid.CellValuePushed += ImageGrid_CellValuePushed;
             imageGrid.CellDoubleClick += (_, __) => JumpToSelectedImage();
+
+            summaryPanel = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 2
+            };
+            summaryPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
+            summaryPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            summaryPanel.Controls.Add(summaryGroupLabel, 0, 0);
+            summaryPanel.Controls.Add(summaryGrid, 0, 1);
+
+            gridHostLayout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 2
+            };
+            gridHostLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0F));
+            gridHostLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            gridHostLayout.Controls.Add(summaryPanel, 0, 0);
+            gridHostLayout.Controls.Add(imageGrid, 0, 1);
+            summaryPanel.Visible = false;
 
             var batchMoveStatusPanel = new TableLayoutPanel
             {
@@ -242,6 +336,7 @@ namespace ImageMove
             clearCheckButton.Click += (_, __) =>
             {
                 checkedPaths.Clear();
+                summaryGrid.Invalidate();
                 imageGrid.InvalidateColumn(imageGrid.Columns["checked"].Index);
                 UpdateSummaryLabel();
             };
@@ -279,7 +374,7 @@ namespace ImageMove
             rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36F));
             rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 84F));
             rootLayout.Controls.Add(filterPanel, 0, 0);
-            rootLayout.Controls.Add(imageGrid, 0, 1);
+            rootLayout.Controls.Add(gridHostLayout, 0, 1);
             rootLayout.Controls.Add(batchMoveStatusPanel, 0, 2);
             rootLayout.Controls.Add(actionPanel, 0, 3);
             Controls.Add(rootLayout);
@@ -288,6 +383,7 @@ namespace ImageMove
             batchMoveBusyControls.Add(applyFilterButton);
             batchMoveBusyControls.Add(clearFilterButton);
             batchMoveBusyControls.Add(refreshButton);
+            batchMoveBusyControls.Add(summaryGrid);
             batchMoveBusyControls.Add(imageGrid);
             batchMoveBusyControls.Add(jumpButton);
             batchMoveBusyControls.Add(checkAllButton);
@@ -330,10 +426,25 @@ namespace ImageMove
             return visibleRowCount;
         }
 
+        internal int SummaryGroupCountForTest()
+        {
+            return summaryGroups.Length;
+        }
+
+        internal int CheckedPathCountForTest()
+        {
+            return checkedPaths.Count;
+        }
+
         internal void StartImmediateFilterForTest(string filterText)
         {
             filterTextBox.Text = filterText ?? string.Empty;
             BeginApplyFilterAsync(filterTextBox.Text.Trim(), GetSelectedPath());
+        }
+
+        internal void SetSummaryGroupCheckedForTest(int groupIndex, bool isChecked)
+        {
+            ApplySummaryGroupCheckState(GetSummaryGroup(groupIndex), groupIndex, isChecked);
         }
 
         private void FilterTextBox_TextChanged(object sender, EventArgs e)
@@ -383,6 +494,7 @@ namespace ImageMove
                         appliedFilterText = filterText;
                         appliedFilterSnapshotPaths = snapshot.FullPaths;
                         showAllRows = result.ShowAllRows;
+                        summaryGroups = result.SummaryGroups;
                         filteredIndices = result.Indices;
                         visibleRowCount = result.RowCount;
                         visibleStartIndex = result.StartIndex;
@@ -391,6 +503,7 @@ namespace ImageMove
                         imageGrid.SuspendLayout();
                         try
                         {
+                            UpdateSummaryGrid();
                             imageGrid.RowCount = visibleRowCount;
                             UpdateSummaryLabel();
                             RestoreSelectedRow(preferredSelectedPath);
@@ -455,7 +568,8 @@ namespace ImageMove
                     truncationMessage = $"件数が多いため現在位置付近 {visibleCount:N0} 件だけ表示しています。";
                 }
 
-                return FilterResult.AllRows(visibleCount, startIndex, paths.Length, truncationMessage);
+                SequenceSummaryGroup[] summaryGroups = BuildSequenceSummaryGroups(snapshot, null);
+                return FilterResult.AllRows(visibleCount, startIndex, paths.Length, truncationMessage, summaryGroups);
             }
 
             int[] matchedIndices = CollectMatchedIndices(snapshot, filterText, filterSeed, token);
@@ -465,7 +579,98 @@ namespace ImageMove
                 ? $"一致件数が多いため先頭 {MaxVisibleRows:N0} 件だけ表示しています。"
                 : string.Empty;
 
-            return FilterResult.Filtered(matchedIndices, filteredVisibleCount, matchedIndices.Length, filteredTruncationMessage);
+            SequenceSummaryGroup[] filteredSummaryGroups = BuildSequenceSummaryGroups(snapshot, matchedIndices);
+            return FilterResult.Filtered(matchedIndices, filteredVisibleCount, matchedIndices.Length, filteredTruncationMessage, filteredSummaryGroups);
+        }
+
+        private static SequenceSummaryGroup[] BuildSequenceSummaryGroups(ImageBrowserSnapshot snapshot, int[] candidateIndices)
+        {
+            int candidateCount = candidateIndices != null ? candidateIndices.Length : snapshot.FullPaths.Length;
+            if (snapshot == null || snapshot.FullPaths.Length == 0 || candidateCount < 2)
+            {
+                return Array.Empty<SequenceSummaryGroup>();
+            }
+
+            var groupsByPrefix = new Dictionary<string, SequenceSummaryGroupAccumulator>(StringComparer.OrdinalIgnoreCase);
+            if (candidateIndices == null)
+            {
+                for (int index = 0; index < snapshot.FullPaths.Length; index++)
+                {
+                    AddSequenceSummaryCandidate(snapshot, index, groupsByPrefix);
+                }
+            }
+            else
+            {
+                for (int index = 0; index < candidateIndices.Length; index++)
+                {
+                    AddSequenceSummaryCandidate(snapshot, candidateIndices[index], groupsByPrefix);
+                }
+            }
+
+            int groupCount = 0;
+            foreach (SequenceSummaryGroupAccumulator accumulator in groupsByPrefix.Values)
+            {
+                if (accumulator.Count > 1)
+                {
+                    groupCount++;
+                }
+            }
+
+            if (groupCount == 0)
+            {
+                return Array.Empty<SequenceSummaryGroup>();
+            }
+
+            var groups = new SequenceSummaryGroup[groupCount];
+            int writeIndex = 0;
+            foreach (SequenceSummaryGroupAccumulator accumulator in groupsByPrefix.Values)
+            {
+                if (accumulator.Count <= 1)
+                {
+                    continue;
+                }
+
+                groups[writeIndex++] = accumulator.ToSummaryGroup(snapshot);
+            }
+
+            Array.Sort(groups, (left, right) => left.FirstIndex.CompareTo(right.FirstIndex));
+            return groups;
+        }
+
+        private static void AddSequenceSummaryCandidate(
+            ImageBrowserSnapshot snapshot,
+            int masterIndex,
+            Dictionary<string, SequenceSummaryGroupAccumulator> groupsByPrefix)
+        {
+            if (masterIndex < 0 || masterIndex >= snapshot.FullPaths.Length)
+            {
+                return;
+            }
+
+            string groupPrefix = snapshot.GetSequenceGroupPrefix(masterIndex);
+            if (string.IsNullOrEmpty(groupPrefix))
+            {
+                return;
+            }
+
+            if (!groupsByPrefix.TryGetValue(groupPrefix, out SequenceSummaryGroupAccumulator accumulator))
+            {
+                accumulator = new SequenceSummaryGroupAccumulator(
+                    groupPrefix,
+                    BuildSequenceSummaryDisplayText(groupPrefix),
+                    snapshot.FileNames[masterIndex],
+                    masterIndex);
+                groupsByPrefix.Add(groupPrefix, accumulator);
+                return;
+            }
+
+            accumulator.Add(masterIndex);
+        }
+
+        private static string BuildSequenceSummaryDisplayText(string rawPrefix)
+        {
+            string displayText = (rawPrefix ?? string.Empty).TrimEnd(' ', '_', '-', '.');
+            return string.IsNullOrWhiteSpace(displayText) ? (rawPrefix ?? string.Empty) : displayText;
         }
 
         private static int[] CollectMatchedIndices(ImageBrowserSnapshot snapshot, string filterText, FilterSeed filterSeed, CancellationToken token)
@@ -718,7 +923,26 @@ namespace ImageMove
             }
 
             string suffix = string.IsNullOrWhiteSpace(truncationMessage) ? string.Empty : $" / {truncationMessage}";
-            summaryLabel.Text = $"表示 {visibleRowCount:N0} 件 / 対象 {matchedRowCount:N0} 件 / 全体 {currentSnapshot.FullPaths.Length:N0} 件 / チェック {checkedPaths.Count:N0} 件{state}{suffix}";
+            summaryLabel.Text = $"表示 {visibleRowCount:N0} 件 / 対象 {matchedRowCount:N0} 件 / 全体 {currentSnapshot.FullPaths.Length:N0} 件 / サマリ {summaryGroups.Length:N0} グループ / チェック {checkedPaths.Count:N0} 件{state}{suffix}";
+        }
+
+        private void UpdateSummaryGrid()
+        {
+            summaryGroupLabel.Text = $"連番サマリ {summaryGroups.Length:N0} グループ";
+            bool hasGroups = summaryGroups.Length > 0;
+            summaryGrid.SuspendLayout();
+            try
+            {
+                summaryGrid.RowCount = summaryGroups.Length;
+                summaryPanel.Visible = hasGroups;
+                gridHostLayout.RowStyles[0].Height = hasGroups ? 180F : 0F;
+            }
+            finally
+            {
+                summaryGrid.ResumeLayout();
+            }
+
+            summaryGrid.Invalidate();
         }
 
         private bool HasPendingFilterChange()
@@ -801,6 +1025,7 @@ namespace ImageMove
                     }
                 }
 
+                summaryGrid.Invalidate();
                 imageGrid.InvalidateColumn(imageGrid.Columns["checked"].Index);
                 UpdateSummaryLabel();
             }
@@ -896,6 +1121,92 @@ namespace ImageMove
             }
         }
 
+        private void SummaryGrid_CurrentCellDirtyStateChanged(object sender, EventArgs e)
+        {
+            if (summaryGrid.IsCurrentCellDirty)
+            {
+                summaryGrid.CommitEdit(DataGridViewDataErrorContexts.Commit);
+            }
+        }
+
+        private void SummaryGrid_CellValueNeeded(object sender, DataGridViewCellValueEventArgs e)
+        {
+            SequenceSummaryGroup group = GetSummaryGroup(e.RowIndex);
+            if (group == null)
+            {
+                return;
+            }
+
+            string columnName = summaryGrid.Columns[e.ColumnIndex].Name;
+            switch (columnName)
+            {
+                case "checked":
+                    e.Value = AreAllSummaryGroupPathsChecked(group);
+                    break;
+                case "count":
+                    e.Value = group.ItemCount;
+                    break;
+                case "checkedCount":
+                    e.Value = GetCheckedCountForSummaryGroup(group);
+                    break;
+                case "groupName":
+                    e.Value = group.DisplayText;
+                    break;
+                case "sampleFileName":
+                    e.Value = group.SampleFileName;
+                    break;
+                case "sampleRelativePath":
+                    e.Value = group.SampleRelativePath;
+                    break;
+            }
+        }
+
+        private void SummaryGrid_CellValuePushed(object sender, DataGridViewCellValueEventArgs e)
+        {
+            if (e.ColumnIndex != summaryGrid.Columns["checked"].Index)
+            {
+                return;
+            }
+
+            SequenceSummaryGroup group = GetSummaryGroup(e.RowIndex);
+            if (group == null)
+            {
+                return;
+            }
+
+            bool isChecked = e.Value != null && Convert.ToBoolean(e.Value);
+            ApplySummaryGroupCheckState(group, e.RowIndex, isChecked);
+        }
+
+        private void ApplySummaryGroupCheckState(SequenceSummaryGroup group, int rowIndex, bool isChecked)
+        {
+            if (group == null)
+            {
+                return;
+            }
+
+            foreach (int masterIndex in group.MasterIndices)
+            {
+                string path = currentSnapshot.FullPaths[masterIndex];
+                if (isChecked)
+                {
+                    checkedPaths.Add(path);
+                }
+                else
+                {
+                    checkedPaths.Remove(path);
+                }
+            }
+
+            if (rowIndex >= 0 && rowIndex < summaryGrid.RowCount)
+            {
+                summaryGrid.InvalidateRow(rowIndex);
+            }
+
+            imageGrid.InvalidateColumn(imageGrid.Columns["checked"].Index);
+            UpdateSummaryLabel();
+        }
+
         private void ImageGrid_CellValueNeeded(object sender, DataGridViewCellValueEventArgs e)
         {
             int masterIndex = GetMasterIndex(e.RowIndex);
@@ -951,7 +1262,45 @@ namespace ImageMove
                 checkedPaths.Remove(path);
             }
 
+            summaryGrid.Invalidate();
             UpdateSummaryLabel();
+        }
+
+        private SequenceSummaryGroup GetSummaryGroup(int rowIndex)
+        {
+            if (rowIndex < 0 || rowIndex >= summaryGroups.Length)
+            {
+                return null;
+            }
+
+            return summaryGroups[rowIndex];
+        }
+
+        private bool AreAllSummaryGroupPathsChecked(SequenceSummaryGroup group)
+        {
+            return group != null &&
+                group.ItemCount > 0 &&
+                GetCheckedCountForSummaryGroup(group) == group.ItemCount;
+        }
+
+        private int GetCheckedCountForSummaryGroup(SequenceSummaryGroup group)
+        {
+            if (group == null || group.ItemCount == 0)
+            {
+                return 0;
+            }
+
+            int checkedCount = 0;
+            foreach (int masterIndex in group.MasterIndices)
+            {
+                string path = currentSnapshot.FullPaths[masterIndex];
+                if (checkedPaths.Contains(path))
+                {
+                    checkedCount++;
+                }
+            }
+
+            return checkedCount;
         }
 
         private int TryResolveDirectRowIndex(string targetPath)
@@ -1212,6 +1561,7 @@ namespace ImageMove
         internal static readonly ImageBrowserSnapshot Empty = new ImageBrowserSnapshot(Array.Empty<string>(), string.Empty, string.Empty, -1);
         private readonly Dictionary<string, int> pathToIndexMap;
         private readonly string[] relativePathCache;
+        private readonly string[] sequenceGroupPrefixCache;
 
         internal ImageBrowserSnapshot(string[] fullPaths, string sourceRoot, string currentPath, int currentIndex)
             : this(fullPaths, null, null, sourceRoot, currentPath, currentIndex)
@@ -1234,6 +1584,7 @@ namespace ImageMove
                 ? fileNames
                 : BuildFileNames(FullPaths);
             relativePathCache = new string[FullPaths.Length];
+            sequenceGroupPrefixCache = new string[FullPaths.Length];
             pathToIndexMap = existingPathToIndexMap != null && existingPathToIndexMap.Count > 0
                 ? existingPathToIndexMap
                 : BuildPathToIndexMap(FullPaths);
@@ -1265,6 +1616,50 @@ namespace ImageMove
             string relativePath = BuildRelativePath(SourceRoot, FullPaths[index]);
             relativePathCache[index] = relativePath;
             return relativePath;
+        }
+
+        internal string GetSequenceGroupPrefix(int index)
+        {
+            if (index < 0 || index >= FullPaths.Length)
+            {
+                return string.Empty;
+            }
+
+            string cachedPrefix = sequenceGroupPrefixCache[index];
+            if (cachedPrefix != null)
+            {
+                return cachedPrefix;
+            }
+
+            string fileName = FileNames[index];
+            if (string.IsNullOrWhiteSpace(fileName))
+            {
+                sequenceGroupPrefixCache[index] = string.Empty;
+                return string.Empty;
+            }
+
+            int extensionIndex = fileName.LastIndexOf('.');
+            int suffixEnd = extensionIndex > 0 ? extensionIndex : fileName.Length;
+            int digitStart = suffixEnd;
+            while (digitStart > 0 && char.IsDigit(fileName[digitStart - 1]))
+            {
+                digitStart--;
+            }
+
+            if (digitStart == suffixEnd || digitStart <= 0)
+            {
+                sequenceGroupPrefixCache[index] = string.Empty;
+                return string.Empty;
+            }
+
+            string prefix = fileName.Substring(0, digitStart);
+            if (string.IsNullOrWhiteSpace(prefix))
+            {
+                prefix = string.Empty;
+            }
+
+            sequenceGroupPrefixCache[index] = prefix;
+            return prefix;
         }
 
         internal bool TryGetAbsoluteIndex(string path, out int index)
@@ -1389,7 +1784,14 @@ namespace ImageMove
 
     internal sealed class FilterResult
     {
-        private FilterResult(bool showAllRows, int[] indices, int rowCount, int startIndex, int matchedCount, string truncationMessage)
+        private FilterResult(
+            bool showAllRows,
+            int[] indices,
+            int rowCount,
+            int startIndex,
+            int matchedCount,
+            string truncationMessage,
+            SequenceSummaryGroup[] summaryGroups)
         {
             ShowAllRows = showAllRows;
             Indices = indices ?? Array.Empty<int>();
@@ -1397,6 +1799,7 @@ namespace ImageMove
             StartIndex = startIndex;
             MatchedCount = matchedCount;
             TruncationMessage = truncationMessage ?? string.Empty;
+            SummaryGroups = summaryGroups ?? Array.Empty<SequenceSummaryGroup>();
         }
 
         internal bool ShowAllRows { get; }
@@ -1411,16 +1814,82 @@ namespace ImageMove
 
         internal string TruncationMessage { get; }
 
-        internal static FilterResult Empty { get; } = new FilterResult(false, Array.Empty<int>(), 0, 0, 0, string.Empty);
+        internal SequenceSummaryGroup[] SummaryGroups { get; }
 
-        internal static FilterResult AllRows(int rowCount, int startIndex, int matchedCount, string truncationMessage)
+        internal static FilterResult Empty { get; } = new FilterResult(false, Array.Empty<int>(), 0, 0, 0, string.Empty, Array.Empty<SequenceSummaryGroup>());
+
+        internal static FilterResult AllRows(int rowCount, int startIndex, int matchedCount, string truncationMessage, SequenceSummaryGroup[] summaryGroups)
         {
-            return new FilterResult(true, Array.Empty<int>(), rowCount, startIndex, matchedCount, truncationMessage);
+            return new FilterResult(true, Array.Empty<int>(), rowCount, startIndex, matchedCount, truncationMessage, summaryGroups);
         }
 
-        internal static FilterResult Filtered(int[] indices, int rowCount, int matchedCount, string truncationMessage)
+        internal static FilterResult Filtered(int[] indices, int rowCount, int matchedCount, string truncationMessage, SequenceSummaryGroup[] summaryGroups)
         {
-            return new FilterResult(false, indices, rowCount, 0, matchedCount, truncationMessage);
+            return new FilterResult(false, indices, rowCount, 0, matchedCount, truncationMessage, summaryGroups);
+        }
+    }
+
+    internal sealed class SequenceSummaryGroup
+    {
+        internal SequenceSummaryGroup(string displayText, string sampleFileName, string sampleRelativePath, int firstIndex, int[] masterIndices)
+        {
+            DisplayText = displayText ?? string.Empty;
+            SampleFileName = sampleFileName ?? string.Empty;
+            SampleRelativePath = sampleRelativePath ?? string.Empty;
+            FirstIndex = firstIndex;
+            MasterIndices = masterIndices ?? Array.Empty<int>();
+        }
+
+        internal string DisplayText { get; }
+
+        internal string SampleFileName { get; }
+
+        internal string SampleRelativePath { get; }
+
+        internal int FirstIndex { get; }
+
+        internal int[] MasterIndices { get; }
+
+        internal int ItemCount => MasterIndices.Length;
+    }
+
+    internal sealed class SequenceSummaryGroupAccumulator
+    {
+        private readonly string displayText;
+        private readonly string sampleFileName;
+        private readonly int firstIndex;
+        private List<int> masterIndices;
+
+        internal SequenceSummaryGroupAccumulator(string rawPrefix, string displayText, string sampleFileName, int firstIndex)
+        {
+            RawPrefix = rawPrefix ?? string.Empty;
+            this.displayText = displayText ?? string.Empty;
+            this.sampleFileName = sampleFileName ?? string.Empty;
+            this.firstIndex = firstIndex;
+            Count = 1;
+        }
+
+        internal string RawPrefix { get; }
+
+        internal int Count { get; private set; }
+
+        internal void Add(int masterIndex)
+        {
+            Count++;
+            if (masterIndices == null)
+            {
+                masterIndices = new List<int>(4) { firstIndex, masterIndex };
+                return;
+            }
+
+            masterIndices.Add(masterIndex);
+        }
+
+        internal SequenceSummaryGroup ToSummaryGroup(ImageBrowserSnapshot snapshot)
+        {
+            int[] indices = masterIndices != null ? masterIndices.ToArray() : Array.Empty<int>();
+            string sampleRelativePath = snapshot != null ? snapshot.GetRelativePath(firstIndex) : string.Empty;
+            return new SequenceSummaryGroup(displayText, sampleFileName, sampleRelativePath, firstIndex, indices);
         }
     }
 

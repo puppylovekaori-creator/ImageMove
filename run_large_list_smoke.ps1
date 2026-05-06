@@ -133,6 +133,7 @@ $prefetchRoot = $null
 $historyRoot = $null
 $historySettingDir = $null
 $historyReloadForm = $null
+$summaryRoot = $null
 $syntheticRoot = $null
 
 try {
@@ -263,6 +264,62 @@ try {
 
     Write-Host ("RESULT1C: source_items={0} destination_items={1} limit={2}" -f $reloadedSourceCombo.Items.Count, $reloadedDestinationCombo.Items.Count, $reloadedLimit)
 
+    Write-Host 'TEST1D: summary grid for grouped serial prefixes'
+    $summaryRoot = New-TempDirectory -Prefix 'ImageMoveSummary'
+    $summaryPaths = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($relativePath in @(
+        'clipA_0001.jpg',
+        'clipA_0002.jpg',
+        'clipA_0003.jpg',
+        'clipB_0001.jpg',
+        'clipB_0002.jpg',
+        'single_file.jpg'
+    )) {
+        $summaryPaths.Add((Join-Path $summaryRoot $relativePath))
+    }
+
+    Set-PrivateFieldValue -Target $mainForm -FieldName 'imagePaths' -Value $summaryPaths
+    Set-PrivateFieldValue -Target $mainForm -FieldName 'currentImageIndex' -Value 0
+    Invoke-PrivateMethod -Target $mainForm -MethodName 'RebuildImagePathCache' | Out-Null
+    Invoke-PrivateMethod -Target $mainForm -MethodName 'OpenImageListBrowser_Click' -Arguments @($null, [System.EventArgs]::Empty) | Out-Null
+
+    $browserForm = Get-PrivateFieldValue -Target $mainForm -FieldName 'imageListBrowserForm'
+    if ($null -eq $browserForm) {
+        throw 'Browser form was not created for summary test.'
+    }
+
+    $summaryFilterMethod = $browserForm.GetType().GetMethod('IsFilterInProgressForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    $summaryGroupCountMethod = $browserForm.GetType().GetMethod('SummaryGroupCountForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    $checkedPathCountMethod = $browserForm.GetType().GetMethod('CheckedPathCountForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    $setSummaryGroupCheckedMethod = $browserForm.GetType().GetMethod('SetSummaryGroupCheckedForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    if ($null -eq $summaryFilterMethod -or $null -eq $summaryGroupCountMethod -or $null -eq $checkedPathCountMethod -or $null -eq $setSummaryGroupCheckedMethod) {
+        throw 'Summary test helper methods were not found on ImageListBrowserForm.'
+    }
+
+    Wait-Until -TimeoutMs 30000 -Condition { -not [bool]$summaryFilterMethod.Invoke($browserForm, @()) }
+    $summaryGroupCount = [int]$summaryGroupCountMethod.Invoke($browserForm, @())
+    if ($summaryGroupCount -ne 2) {
+        throw "Expected 2 summary groups, actual=$summaryGroupCount"
+    }
+
+    $setSummaryGroupCheckedMethod.Invoke($browserForm, @(0, $true)) | Out-Null
+    $checkedPathCount = [int]$checkedPathCountMethod.Invoke($browserForm, @())
+    if ($checkedPathCount -ne 3) {
+        throw "Expected 3 checked paths after first summary group selection, actual=$checkedPathCount"
+    }
+
+    $setSummaryGroupCheckedMethod.Invoke($browserForm, @(1, $true)) | Out-Null
+    $checkedPathCount = [int]$checkedPathCountMethod.Invoke($browserForm, @())
+    if ($checkedPathCount -ne 5) {
+        throw "Expected 5 checked paths after second summary group selection, actual=$checkedPathCount"
+    }
+
+    Write-Host ("RESULT1D: groups={0} checked={1}" -f $summaryGroupCount, $checkedPathCount)
+
+    $browserForm.Close()
+    $browserForm.Dispose()
+    $browserForm = $null
+
     Write-Host "TEST2: virtual browser with $SyntheticImageCount synthetic image paths"
     $syntheticRoot = New-TempDirectory -Prefix 'ImageMoveSyntheticBrowser'
     $sourceTextBox.Text = $syntheticRoot
@@ -347,7 +404,7 @@ finally {
         $mainForm.Dispose()
     }
 
-    foreach ($path in @($mixedRoot, $prefetchRoot, $historyRoot, $historySettingDir, $syntheticRoot)) {
+    foreach ($path in @($mixedRoot, $prefetchRoot, $historyRoot, $historySettingDir, $summaryRoot, $syntheticRoot)) {
         if (-not [string]::IsNullOrWhiteSpace($path) -and (Test-Path $path)) {
             Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
         }
