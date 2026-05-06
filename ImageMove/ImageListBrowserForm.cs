@@ -1366,7 +1366,7 @@ namespace ImageMove
                 ownerWindow = this;
             }
 
-            MessageBox.Show(ownerWindow, text, caption, buttons, icon);
+            TopMostMessageBox.Show(ownerWindow, text, caption, buttons, icon);
         }
     }
 
@@ -1531,7 +1531,7 @@ namespace ImageMove
                 var choice = configuredDestinationComboBox.SelectedItem as DestinationChoice;
                 if (choice == null)
                 {
-                    MessageBox.Show(this, "親画面で設定済みの移動先を選択してください。", "一括移動", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    TopMostMessageBox.Show(this, "親画面で設定済みの移動先を選択してください。", "一括移動", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
                 }
 
@@ -1545,7 +1545,7 @@ namespace ImageMove
             string customPath = (customFolderTextBox.Text ?? string.Empty).Trim().Trim('"');
             if (string.IsNullOrWhiteSpace(customPath) || !Directory.Exists(customPath))
             {
-                MessageBox.Show(this, "任意フォルダを指定してください。", "一括移動", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                TopMostMessageBox.Show(this, "任意フォルダを指定してください。", "一括移動", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 

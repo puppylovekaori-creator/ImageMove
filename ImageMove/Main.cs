@@ -2166,7 +2166,7 @@ namespace ImageMove
 
         private void ShowOwnedMessage(string text, string caption = AppDisplayName, MessageBoxButtons buttons = MessageBoxButtons.OK, MessageBoxIcon icon = MessageBoxIcon.Information)
         {
-            MessageBox.Show(this, text, caption, buttons, icon);
+            TopMostMessageBox.Show(this, text, caption, buttons, icon);
         }
 
         /// <summary>
