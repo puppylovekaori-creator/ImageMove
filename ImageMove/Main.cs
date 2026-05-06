@@ -375,7 +375,7 @@ namespace ImageMove
         private void PathComboBox_Leave(object sender, EventArgs e)
         {
             RememberFolderHistoryForControl(sender as ComboBox);
-            SaveSettingSafe();
+            RequestSettingsSave();
         }
 
         /// <summary>
@@ -384,7 +384,7 @@ namespace ImageMove
         private void PathComboBox_SelectionChangeCommitted(object sender, EventArgs e)
         {
             RememberFolderHistoryForControl(sender as ComboBox);
-            SaveSettingSafe();
+            RequestSettingsSave();
         }
 
         /// <summary>
@@ -623,8 +623,6 @@ namespace ImageMove
             {
                 RememberDestinationDirectory(destinationTextBox.Text, false);
             }
-
-            RefreshRecentFolderComboBoxItems();
         }
 
         /// <summary>
@@ -1000,7 +998,7 @@ namespace ImageMove
 
                 DisplayCurrentImage();
                 RefreshImageBrowserItemsIfOpen();
-                SaveSettingSafe();
+                RequestSettingsSave();
             }
             catch (Exception ex)
             {
@@ -1370,7 +1368,7 @@ namespace ImageMove
                     {
                         targetTextBox.Text = dialog.SelectedPath;
                         RememberFolderHistoryForControl(targetTextBox);
-                        SaveSettingSafe();
+                        RequestSettingsSave();
                     }
                 }
             }
@@ -2059,7 +2057,7 @@ namespace ImageMove
                 return result;
             }
 
-            RememberDestinationDirectory(normalizedDestinationDirectory);
+            RememberDestinationDirectory(normalizedDestinationDirectory, false);
             var movedItems = new List<MoveHistoryItem>();
             var movedSourcePaths = new List<string>();
             progressCallback?.Invoke(new BatchMoveProgressInfo(totalCount, 0, 0, 0, "一括移動を開始しました。", string.Empty));
@@ -2148,7 +2146,7 @@ namespace ImageMove
                     RefreshImageBrowserItemsIfOpen();
                 }
 
-                SaveSettingSafe();
+                RequestSettingsSave();
             }
             else
             {
@@ -2708,7 +2706,7 @@ namespace ImageMove
         /// </summary>
         private void MainSplitContainer_SplitterMoved(object sender, SplitterEventArgs e)
         {
-            SaveSettingSafe();
+            RequestSettingsSave();
         }
 
         /// <summary>
