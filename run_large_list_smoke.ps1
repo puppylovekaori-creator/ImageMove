@@ -10,6 +10,13 @@ $ErrorActionPreference = 'Stop'
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+[System.Windows.Forms.Application]::SetUnhandledExceptionMode([System.Windows.Forms.UnhandledExceptionMode]::CatchException)
+$script:threadExceptions = New-Object 'System.Collections.Generic.List[string]'
+$threadExceptionHandler = [System.Threading.ThreadExceptionEventHandler]{
+    param($sender, $e)
+    $script:threadExceptions.Add($e.Exception.ToString())
+}
+[System.Windows.Forms.Application]::add_ThreadException($threadExceptionHandler)
 
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $solutionPath = Join-Path $repoRoot 'ImageMove.sln'
@@ -386,9 +393,28 @@ try {
 
     Write-Host ("RESULT2: open_ms={0} visible={1} filter_ms={2} filtered={3}" -f $openStopwatch.ElapsedMilliseconds, $visibleCount, $filterStopwatch.ElapsedMilliseconds, $filteredCount)
     Write-Host ("RESULT2B: {0}" -f ($chainResults -join ', '))
+    Write-Host 'TEST2C: close browser while filter is still running'
+    $filterMethod.Invoke($browserForm, @('sample_001')) | Out-Null
+    Wait-Until -TimeoutMs 1000 -Condition { [bool]$isFilterMethod.Invoke($browserForm, @()) }
+    $browserForm.Close()
+    $browserForm.Dispose()
+    $browserForm = $null
+
+    $closeWait = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($closeWait.ElapsedMilliseconds -lt 1500) {
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 25
+    }
+
+    if ($script:threadExceptions.Count -gt 0) {
+        throw ("Unhandled WinForms exception after close: " + $script:threadExceptions[0])
+    }
+
+    Write-Host 'RESULT2C: close_during_filter_ok'
     Write-Host 'IMAGE_MOVE_LARGE_LIST_SMOKE_OK'
 }
 finally {
+    [System.Windows.Forms.Application]::remove_ThreadException($threadExceptionHandler)
     if ($browserForm -ne $null -and -not $browserForm.IsDisposed) {
         $browserForm.Close()
         $browserForm.Dispose()

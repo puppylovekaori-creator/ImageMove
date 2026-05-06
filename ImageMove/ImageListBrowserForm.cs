@@ -43,6 +43,7 @@ namespace ImageMove
         private string truncationMessage = string.Empty;
         private bool batchMoveInProgress;
         private bool checkApplyInProgress;
+        private bool closeRequested;
 
         internal ImageListBrowserForm(Main ownerMain)
         {
@@ -397,21 +398,42 @@ namespace ImageMove
 
         internal void RefreshItems()
         {
+            if (closeRequested || IsDisposed)
+            {
+                return;
+            }
+
             string selectedPath = GetSelectedPath();
             currentSnapshot = ownerMain.GetImageBrowserSnapshot();
             currentPath = currentSnapshot.CurrentPath ?? string.Empty;
             BeginApplyFilterAsync((filterTextBox.Text ?? string.Empty).Trim(), selectedPath);
         }
 
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            closeRequested = true;
+            filterInProgress = false;
+            checkApplyInProgress = false;
+            batchMoveInProgress = false;
+            CancelPendingFilter();
+            PrepareGridForDispose(summaryGrid);
+            PrepareGridForDispose(imageGrid);
+            base.OnFormClosing(e);
+        }
+
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
-            filterCts?.Cancel();
-            filterCts?.Dispose();
+            CancelPendingFilter();
             base.OnFormClosed(e);
         }
 
         internal void UpdateCurrentPath(string newCurrentPath)
         {
+            if (closeRequested || IsDisposed)
+            {
+                return;
+            }
+
             currentPath = newCurrentPath ?? string.Empty;
             imageGrid.InvalidateColumn(imageGrid.Columns["current"].Index);
         }
@@ -454,8 +476,12 @@ namespace ImageMove
 
         private void BeginApplyFilterAsync(string filterText, string preferredSelectedPath)
         {
-            filterCts?.Cancel();
-            filterCts?.Dispose();
+            CancelPendingFilter();
+            if (closeRequested || IsDisposed)
+            {
+                return;
+            }
+
             filterCts = new CancellationTokenSource();
             CancellationToken token = filterCts.Token;
             ImageBrowserSnapshot snapshot = currentSnapshot;
@@ -469,7 +495,7 @@ namespace ImageMove
                 .ContinueWith(
                     task =>
                     {
-                        if (IsDisposed || token.IsCancellationRequested)
+                        if (!CanUpdateUi() || token.IsCancellationRequested)
                         {
                             return;
                         }
@@ -480,6 +506,11 @@ namespace ImageMove
                         if (task.IsCanceled)
                         {
                             UpdateSummaryLabel();
+                            return;
+                        }
+
+                        if (!CanUpdateUi())
+                        {
                             return;
                         }
 
@@ -904,6 +935,11 @@ namespace ImageMove
 
         private void UpdateSummaryLabel()
         {
+            if (!CanUpdateUi())
+            {
+                return;
+            }
+
             string state = string.Empty;
             if (batchMoveInProgress)
             {
@@ -928,6 +964,11 @@ namespace ImageMove
 
         private void UpdateSummaryGrid()
         {
+            if (!CanUpdateUi())
+            {
+                return;
+            }
+
             summaryGroupLabel.Text = $"連番サマリ {summaryGroups.Length:N0} グループ";
             bool hasGroups = summaryGroups.Length > 0;
             summaryGrid.SuspendLayout();
@@ -953,6 +994,11 @@ namespace ImageMove
 
         private void UpdateUiBusyState()
         {
+            if (!CanUpdateUi())
+            {
+                return;
+            }
+
             bool isBusy = batchMoveInProgress || filterInProgress || checkApplyInProgress;
             UseWaitCursor = isBusy;
 
@@ -968,6 +1014,11 @@ namespace ImageMove
 
         private void ResetBatchMoveProgress()
         {
+            if (batchMoveProgressBar.IsDisposed || batchMoveStatusLabel.IsDisposed)
+            {
+                return;
+            }
+
             batchMoveProgressBar.Minimum = 0;
             batchMoveProgressBar.Maximum = 1;
             batchMoveProgressBar.Value = 0;
@@ -976,7 +1027,7 @@ namespace ImageMove
 
         private void UpdateBatchMoveProgress(BatchMoveProgressInfo progress)
         {
-            if (progress == null || IsDisposed)
+            if (progress == null || !CanUpdateUi())
             {
                 return;
             }
@@ -1012,6 +1063,10 @@ namespace ImageMove
                 string filterText = (filterTextBox.Text ?? string.Empty).Trim();
                 ImageBrowserSnapshot snapshot = currentSnapshot;
                 string[] targetPaths = await Task.Run(() => CollectTargetPaths(snapshot, filterText, mode));
+                if (!CanUpdateUi())
+                {
+                    return;
+                }
 
                 if (isChecked)
                 {
@@ -1356,6 +1411,11 @@ namespace ImageMove
 
         private void ShowOwnedMessage(string text, string caption, MessageBoxButtons buttons, MessageBoxIcon icon)
         {
+            if (closeRequested)
+            {
+                return;
+            }
+
             IWin32Window ownerWindow;
             if (ownerMain != null && !ownerMain.IsDisposed)
             {
@@ -1367,6 +1427,71 @@ namespace ImageMove
             }
 
             TopMostMessageBox.Show(ownerWindow, text, caption, buttons, icon);
+        }
+
+        private void CancelPendingFilter()
+        {
+            CancellationTokenSource previous = Interlocked.Exchange(ref filterCts, null);
+            if (previous == null)
+            {
+                return;
+            }
+
+            try
+            {
+                previous.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+
+            previous.Dispose();
+        }
+
+        private bool CanUpdateUi()
+        {
+            return !closeRequested &&
+                !IsDisposed &&
+                !Disposing &&
+                summaryGrid != null &&
+                !summaryGrid.IsDisposed &&
+                imageGrid != null &&
+                !imageGrid.IsDisposed;
+        }
+
+        private static void PrepareGridForDispose(DataGridView grid)
+        {
+            if (grid == null || grid.IsDisposed)
+            {
+                return;
+            }
+
+            try
+            {
+                grid.CancelEdit();
+            }
+            catch (InvalidOperationException)
+            {
+            }
+
+            try
+            {
+                grid.CurrentCell = null;
+            }
+            catch (InvalidOperationException)
+            {
+            }
+
+            try
+            {
+                grid.RowCount = 0;
+            }
+            catch (InvalidOperationException)
+            {
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+            }
         }
     }
 

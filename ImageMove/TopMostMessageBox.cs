@@ -22,15 +22,34 @@ namespace ImageMove
 
         private static IntPtr GetOwnerHandle(IWin32Window owner)
         {
-            if (owner != null)
+            if (owner is Control ownerControl)
             {
-                return owner.Handle;
+                if (!ownerControl.IsDisposed && !ownerControl.Disposing && ownerControl.IsHandleCreated)
+                {
+                    return ownerControl.Handle;
+                }
             }
 
             Form activeForm = Form.ActiveForm;
-            if (activeForm != null && !activeForm.IsDisposed)
+            if (activeForm != null && !activeForm.IsDisposed && !activeForm.Disposing && activeForm.IsHandleCreated)
             {
                 return activeForm.Handle;
+            }
+
+            if (owner != null)
+            {
+                try
+                {
+                    return owner.Handle;
+                }
+                catch (ObjectDisposedException)
+                {
+                    return IntPtr.Zero;
+                }
+                catch (InvalidOperationException)
+                {
+                    return IntPtr.Zero;
+                }
             }
 
             return IntPtr.Zero;
