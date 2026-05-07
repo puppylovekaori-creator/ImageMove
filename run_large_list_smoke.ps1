@@ -158,18 +158,20 @@ try {
     $gridSidebarOverflowMethod = $mainForm.GetType().GetMethod('GridReviewHasSidebarHorizontalOverflowForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
     $gridSidebarMinWidthMethod = $mainForm.GetType().GetMethod('GridReviewSidebarMinimumWidthForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
     $gridSidebarCurrentWidthMethod = $mainForm.GetType().GetMethod('GridReviewSidebarCurrentWidthForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    $gridPinnedActionsMethod = $mainForm.GetType().GetMethod('GridReviewHasPinnedActionButtonsForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
     $gridStatusCountMethod = $mainForm.GetType().GetMethod('GridReviewStatusCountForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
     $gridSetPageSizeMethod = $mainForm.GetType().GetMethod('GridReviewSetPageSizeForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
     $gridGoToPageMethod = $mainForm.GetType().GetMethod('GridReviewGoToPageForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
     $gridCheckVisibleMethod = $mainForm.GetType().GetMethod('GridReviewCheckVisiblePageForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    $gridToggleVisibleClickMethod = $mainForm.GetType().GetMethod('GridReviewToggleVisibleItemByClickForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
     $gridSetStatusFilterMethod = $mainForm.GetType().GetMethod('GridReviewSetStatusFilterForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
     $gridExcludeCheckedMethod = $mainForm.GetType().GetMethod('GridReviewExcludeCheckedToFolderForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
     $gridRestoreCheckedMethod = $mainForm.GetType().GetMethod('GridReviewRestoreCheckedForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
     if ($null -eq $reviewModeLayoutMethod -or $null -eq $setReviewModeMethod -or $null -eq $gridBusyMethod -or $null -eq $gridVisibleCountMethod -or
         $null -eq $gridFilteredCountMethod -or $null -eq $gridTotalCountMethod -or $null -eq $gridCheckedCountMethod -or
         $null -eq $gridSidebarOverflowMethod -or $null -eq $gridSidebarMinWidthMethod -or $null -eq $gridSidebarCurrentWidthMethod -or
-        $null -eq $gridStatusCountMethod -or $null -eq $gridSetPageSizeMethod -or $null -eq $gridGoToPageMethod -or
-        $null -eq $gridCheckVisibleMethod -or $null -eq $gridSetStatusFilterMethod -or $null -eq $gridExcludeCheckedMethod -or
+        $null -eq $gridPinnedActionsMethod -or $null -eq $gridStatusCountMethod -or $null -eq $gridSetPageSizeMethod -or $null -eq $gridGoToPageMethod -or
+        $null -eq $gridCheckVisibleMethod -or $null -eq $gridToggleVisibleClickMethod -or $null -eq $gridSetStatusFilterMethod -or $null -eq $gridExcludeCheckedMethod -or
         $null -eq $gridRestoreCheckedMethod) {
         throw 'Grid review test helper methods were not found on Main.'
     }
@@ -481,6 +483,9 @@ try {
         $gridSidebarCurrentWidth = [int]$gridSidebarCurrentWidthMethod.Invoke($mainForm, @())
         throw "Grid sidebar layout is invalid: overflow=$gridSidebarHasOverflow current_width=$gridSidebarCurrentWidth min_width=$gridSidebarMinWidth"
     }
+    if (-not [bool]$gridPinnedActionsMethod.Invoke($mainForm, @())) {
+        throw 'Grid action buttons are not pinned above the scrollable settings area.'
+    }
 
     Wait-Until -TimeoutMs 30000 -Condition { [int]$gridVisibleCountMethod.Invoke($mainForm, @()) -eq 1000 }
     $gridPagingVisibleCount = [int]$gridVisibleCountMethod.Invoke($mainForm, @())
@@ -488,6 +493,18 @@ try {
     $gridPagingTotalCount = [int]$gridTotalCountMethod.Invoke($mainForm, @())
     if ($gridPagingVisibleCount -ne 1000 -or $gridPagingFilteredCount -ne 1100 -or $gridPagingTotalCount -ne 1100) {
         throw "Grid paging counts are invalid: visible=$gridPagingVisibleCount filtered=$gridPagingFilteredCount total=$gridPagingTotalCount"
+    }
+
+    $gridToggleVisibleClickMethod.Invoke($mainForm, @(0)) | Out-Null
+    $gridCheckedAfterSingleClick = [int]$gridCheckedCountMethod.Invoke($mainForm, @())
+    if ($gridCheckedAfterSingleClick -ne 1) {
+        throw "Single-click thumbnail toggle did not update the checked count: actual=$gridCheckedAfterSingleClick"
+    }
+
+    $gridToggleVisibleClickMethod.Invoke($mainForm, @(0)) | Out-Null
+    $gridCheckedAfterSecondSingleClick = [int]$gridCheckedCountMethod.Invoke($mainForm, @())
+    if ($gridCheckedAfterSecondSingleClick -ne 0) {
+        throw "Second single-click thumbnail toggle did not clear the checked count: actual=$gridCheckedAfterSecondSingleClick"
     }
 
     $gridCheckVisibleMethod.Invoke($mainForm, @()) | Out-Null

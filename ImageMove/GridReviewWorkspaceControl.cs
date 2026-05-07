@@ -29,6 +29,7 @@ namespace ImageMove
         private TableLayoutPanel sidebarLayout;
         private Panel settingsScrollPanel;
         private Control settingsLayoutContent;
+        private Control primaryActionGroupPanel;
         private DoubleBufferedListView thumbnailListView;
         private ImageList thumbnailImageList;
         private Label emptyStateLabel;
@@ -73,11 +74,13 @@ namespace ImageMove
         private readonly HashSet<string> checkedSourcePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly ThumbnailCacheManager thumbnailCache;
         private readonly GridReviewSessionLogger sessionLogger;
+        private readonly System.Windows.Forms.Timer thumbnailSingleClickTimer;
 
         private List<GridReviewItemRecord> filteredItems = new List<GridReviewItemRecord>();
         private List<GridReviewItemRecord> currentPageItems = new List<GridReviewItemRecord>();
         private CancellationTokenSource thumbnailCancellationTokenSource;
         private CancellationTokenSource metadataCancellationTokenSource;
+        private ListViewItem pendingThumbnailSingleClickItem;
         private string currentSourceRoot = string.Empty;
         private string lastExcludeFolderPath = string.Empty;
         private int pendingSidebarWidth = 420;
@@ -94,6 +97,11 @@ namespace ImageMove
             thumbnailCache = new ThumbnailCacheManager(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ImageMove", "thumbnail_cache"));
             string assemblyDirectory = Path.GetDirectoryName(typeof(GridReviewWorkspaceControl).Assembly.Location) ?? AppDomain.CurrentDomain.BaseDirectory;
             sessionLogger = new GridReviewSessionLogger(assemblyDirectory);
+            thumbnailSingleClickTimer = new System.Windows.Forms.Timer
+            {
+                Interval = Math.Max(200, SystemInformation.DoubleClickTime + 20)
+            };
+            thumbnailSingleClickTimer.Tick += ThumbnailSingleClickTimer_Tick;
 
             Dock = DockStyle.Fill;
 
@@ -133,6 +141,7 @@ namespace ImageMove
             };
             thumbnailListView.ItemChecked += ThumbnailListView_ItemChecked;
             thumbnailListView.ItemSelectionChanged += (_, __) => UpdateSelectionSummary();
+            thumbnailListView.MouseUp += ThumbnailListView_MouseUp;
             thumbnailListView.DoubleClick += ThumbnailListView_DoubleClick;
 
             emptyStateLabel = new Label
@@ -153,10 +162,11 @@ namespace ImageMove
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 9,
+                RowCount = 10,
                 Padding = new Padding(12),
                 AutoScroll = false
             };
+            sidebarLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             sidebarLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             sidebarLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             sidebarLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -256,6 +266,9 @@ namespace ImageMove
             thumbnailActionPanel.Controls.Add(clearCacheButton);
             sidebarLayout.Controls.Add(thumbnailActionPanel, 0, 6);
 
+            primaryActionGroupPanel = CreateGroupPanel("実行", CreatePrimaryActionLayout());
+            sidebarLayout.Controls.Add(primaryActionGroupPanel, 0, 7);
+
             settingsScrollPanel = new Panel
             {
                 Dock = DockStyle.Fill,
@@ -263,10 +276,10 @@ namespace ImageMove
             };
             settingsLayoutContent = CreateSettingsLayout();
             settingsScrollPanel.Controls.Add(settingsLayoutContent);
-            sidebarLayout.Controls.Add(settingsScrollPanel, 0, 7);
+            sidebarLayout.Controls.Add(settingsScrollPanel, 0, 8);
 
             historyGridView = CreateHistoryGrid();
-            sidebarLayout.Controls.Add(historyGridView, 0, 8);
+            sidebarLayout.Controls.Add(historyGridView, 0, 9);
 
             rootSplitContainer.Panel2.Controls.Add(sidebarLayout);
             Controls.Add(rootSplitContainer);
@@ -286,6 +299,7 @@ namespace ImageMove
             workspaceVisible = isVisible;
             if (!workspaceVisible)
             {
+                CancelPendingThumbnailSingleClick();
                 CancelThumbnailWork();
                 return;
             }
@@ -486,6 +500,8 @@ namespace ImageMove
 
         internal void DisposeWorkspace()
         {
+            CancelPendingThumbnailSingleClick();
+            thumbnailSingleClickTimer.Dispose();
             CancelThumbnailWork();
             CancelMetadataWork();
             thumbnailCache.Dispose();
@@ -532,6 +548,31 @@ namespace ImageMove
         internal int SidebarCurrentWidthForTest()
         {
             return rootSplitContainer?.Panel2?.Width ?? 0;
+        }
+
+        internal bool HasPinnedActionButtonsForTest()
+        {
+            if (settingsScrollPanel == null || primaryActionGroupPanel == null || excludeCheckedButton == null || restoreCheckedButton == null || clearCheckButton == null)
+            {
+                return false;
+            }
+
+            return ReferenceEquals(primaryActionGroupPanel.Parent, sidebarLayout)
+                && primaryActionGroupPanel.Bottom <= settingsScrollPanel.Top
+                && !IsDescendantOf(settingsScrollPanel, excludeCheckedButton)
+                && !IsDescendantOf(settingsScrollPanel, restoreCheckedButton)
+                && !IsDescendantOf(settingsScrollPanel, clearCheckButton);
+        }
+
+        internal void ToggleVisibleItemByThumbnailClickForTest(int visibleIndex)
+        {
+            if (visibleIndex < 0 || visibleIndex >= thumbnailListView.Items.Count)
+            {
+                return;
+            }
+
+            QueueThumbnailSingleClickToggle(thumbnailListView.Items[visibleIndex]);
+            ApplyPendingThumbnailSingleClickToggle();
         }
 
         internal void SetPageSizeForTest(int pageSize)
@@ -586,9 +627,62 @@ namespace ImageMove
             panel.Controls.Add(CreateGroupPanel("表示設定", CreateDisplaySettingsLayout()));
             panel.Controls.Add(CreateGroupPanel("並び替えと絞り込み", CreateFilterLayout()));
             panel.Controls.Add(CreateGroupPanel("ページ移動", CreatePagingLayout()));
-            panel.Controls.Add(CreateGroupPanel("選択操作", CreateSelectionActionLayout()));
+            panel.Controls.Add(CreateGroupPanel("選択補助", CreateSelectionActionLayout()));
             panel.Controls.Add(CreateGroupPanel("履歴", CreateHistoryGuideLayout()));
             return panel;
+        }
+
+        private Control CreatePrimaryActionLayout()
+        {
+            var layout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                ColumnCount = 1
+            };
+
+            var hintLabel = new Label
+            {
+                Dock = DockStyle.Top,
+                AutoSize = false,
+                AutoEllipsis = true,
+                Height = 40,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Text = "画像をクリックするとチェックが切り替わります。ダブルクリックで単票表示します。"
+            };
+            layout.Controls.Add(hintLabel, 0, 0);
+
+            excludeCheckedButton = new Button
+            {
+                Name = "excludeCheckedButton",
+                Text = "チェック画像を除外へ送る",
+                Dock = DockStyle.Top,
+                UseVisualStyleBackColor = true
+            };
+            excludeCheckedButton.Click += async (_, __) => await ExcludeCheckedAsync();
+            layout.Controls.Add(excludeCheckedButton, 0, 1);
+
+            restoreCheckedButton = new Button
+            {
+                Name = "restoreCheckedButton",
+                Text = "チェック画像を戻す",
+                Dock = DockStyle.Top,
+                UseVisualStyleBackColor = true
+            };
+            restoreCheckedButton.Click += async (_, __) => await RestoreCheckedAsync();
+            layout.Controls.Add(restoreCheckedButton, 0, 2);
+
+            clearCheckButton = new Button
+            {
+                Name = "clearCheckButton",
+                Text = "選択を解除",
+                Dock = DockStyle.Top,
+                UseVisualStyleBackColor = true
+            };
+            clearCheckButton.Click += (_, __) => ClearAllCheckedState();
+            layout.Controls.Add(clearCheckButton, 0, 3);
+
+            return layout;
         }
 
         private Control CreateDisplaySettingsLayout()
@@ -874,36 +968,6 @@ namespace ImageMove
             };
             invertCheckButton.Click += (_, __) => InvertCheckedStateForFilteredItems();
             layout.Controls.Add(invertCheckButton, 0, 2);
-
-            clearCheckButton = new Button
-            {
-                Name = "clearCheckButton",
-                Text = "選択を解除",
-                Dock = DockStyle.Top,
-                UseVisualStyleBackColor = true
-            };
-            clearCheckButton.Click += (_, __) => ClearAllCheckedState();
-            layout.Controls.Add(clearCheckButton, 0, 3);
-
-            excludeCheckedButton = new Button
-            {
-                Name = "excludeCheckedButton",
-                Text = "チェック画像を除外へ送る",
-                Dock = DockStyle.Top,
-                UseVisualStyleBackColor = true
-            };
-            excludeCheckedButton.Click += async (_, __) => await ExcludeCheckedAsync();
-            layout.Controls.Add(excludeCheckedButton, 0, 4);
-
-            restoreCheckedButton = new Button
-            {
-                Name = "restoreCheckedButton",
-                Text = "チェック画像を戻す",
-                Dock = DockStyle.Top,
-                UseVisualStyleBackColor = true
-            };
-            restoreCheckedButton.Click += async (_, __) => await RestoreCheckedAsync();
-            layout.Controls.Add(restoreCheckedButton, 0, 5);
 
             return layout;
         }
@@ -1239,6 +1303,7 @@ namespace ImageMove
             pageLabel.Text = $"ページ {safePage:N0} / {totalPages:N0}";
 
             CancelThumbnailWork();
+            CancelPendingThumbnailSingleClick();
             BuildListViewItems();
             BeginPageThumbnailGeneration();
             UpdateSelectionSummary();
@@ -1725,6 +1790,7 @@ namespace ImageMove
 
         private void ResetSessionCatalog()
         {
+            CancelPendingThumbnailSingleClick();
             checkedSourcePaths.Clear();
             itemMap.Clear();
             allItems.Clear();
@@ -1901,6 +1967,19 @@ namespace ImageMove
             return bitmap;
         }
 
+        private static bool IsDescendantOf(Control parent, Control child)
+        {
+            for (Control current = child; current != null; current = current.Parent)
+            {
+                if (ReferenceEquals(current, parent))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         private void ThumbnailListView_ItemChecked(object sender, ItemCheckedEventArgs e)
         {
             if (!(e.Item.Tag is GridReviewItemRecord record))
@@ -1921,8 +2000,67 @@ namespace ImageMove
             UpdateButtonsEnabled();
         }
 
+        private void ThumbnailListView_MouseUp(object sender, MouseEventArgs e)
+        {
+            if (e == null || e.Button != MouseButtons.Left || e.Clicks != 1 || !thumbnailListView.CheckBoxes || operationRunning)
+            {
+                return;
+            }
+
+            ListViewHitTestInfo hitTest = thumbnailListView.HitTest(e.Location);
+            if (hitTest?.Item == null)
+            {
+                return;
+            }
+
+            if ((hitTest.Location & ListViewHitTestLocations.StateImage) == ListViewHitTestLocations.StateImage)
+            {
+                return;
+            }
+
+            QueueThumbnailSingleClickToggle(hitTest.Item);
+        }
+
+        private void ThumbnailSingleClickTimer_Tick(object sender, EventArgs e)
+        {
+            thumbnailSingleClickTimer.Stop();
+            ApplyPendingThumbnailSingleClickToggle();
+        }
+
+        private void QueueThumbnailSingleClickToggle(ListViewItem item)
+        {
+            if (item == null || item.ListView != thumbnailListView || !thumbnailListView.CheckBoxes)
+            {
+                return;
+            }
+
+            pendingThumbnailSingleClickItem = item;
+            thumbnailSingleClickTimer.Interval = Math.Max(200, SystemInformation.DoubleClickTime + 20);
+            thumbnailSingleClickTimer.Stop();
+            thumbnailSingleClickTimer.Start();
+        }
+
+        private void CancelPendingThumbnailSingleClick()
+        {
+            pendingThumbnailSingleClickItem = null;
+            thumbnailSingleClickTimer.Stop();
+        }
+
+        private void ApplyPendingThumbnailSingleClickToggle()
+        {
+            ListViewItem item = pendingThumbnailSingleClickItem;
+            pendingThumbnailSingleClickItem = null;
+            if (item == null || item.ListView != thumbnailListView || !thumbnailListView.CheckBoxes)
+            {
+                return;
+            }
+
+            item.Checked = !item.Checked;
+        }
+
         private void ThumbnailListView_DoubleClick(object sender, EventArgs e)
         {
+            CancelPendingThumbnailSingleClick();
             if (!(thumbnailListView.SelectedItems.Count > 0) || !(thumbnailListView.SelectedItems[0].Tag is GridReviewItemRecord record))
             {
                 return;

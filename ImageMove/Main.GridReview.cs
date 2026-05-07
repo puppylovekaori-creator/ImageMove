@@ -620,6 +620,11 @@ namespace ImageMove
             return gridReviewWorkspaceControl?.SidebarCurrentWidthForTest() ?? 0;
         }
 
+        internal bool GridReviewHasPinnedActionButtonsForTest()
+        {
+            return gridReviewWorkspaceControl != null && gridReviewWorkspaceControl.HasPinnedActionButtonsForTest();
+        }
+
         internal int GridReviewStatusCountForTest(int statusValue)
         {
             return gridReviewWorkspaceControl?.StatusCountForTest((GridReviewItemStatus)statusValue) ?? 0;
@@ -638,6 +643,11 @@ namespace ImageMove
         internal void GridReviewCheckVisiblePageForTest()
         {
             gridReviewWorkspaceControl?.CheckVisiblePageForTest();
+        }
+
+        internal void GridReviewToggleVisibleItemByClickForTest(int visibleIndex)
+        {
+            gridReviewWorkspaceControl?.ToggleVisibleItemByThumbnailClickForTest(visibleIndex);
         }
 
         internal void GridReviewSetStatusFilterForTest(int statusValue)
