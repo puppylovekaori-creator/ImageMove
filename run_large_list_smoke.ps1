@@ -154,6 +154,9 @@ try {
     $gridFilteredCountMethod = $mainForm.GetType().GetMethod('GridReviewFilteredItemCountForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
     $gridTotalCountMethod = $mainForm.GetType().GetMethod('GridReviewTotalItemCountForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
     $gridCheckedCountMethod = $mainForm.GetType().GetMethod('GridReviewCheckedCountForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    $gridSidebarOverflowMethod = $mainForm.GetType().GetMethod('GridReviewHasSidebarHorizontalOverflowForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    $gridSidebarMinWidthMethod = $mainForm.GetType().GetMethod('GridReviewSidebarMinimumWidthForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    $gridSidebarCurrentWidthMethod = $mainForm.GetType().GetMethod('GridReviewSidebarCurrentWidthForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
     $gridStatusCountMethod = $mainForm.GetType().GetMethod('GridReviewStatusCountForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
     $gridSetPageSizeMethod = $mainForm.GetType().GetMethod('GridReviewSetPageSizeForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
     $gridGoToPageMethod = $mainForm.GetType().GetMethod('GridReviewGoToPageForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
@@ -163,6 +166,7 @@ try {
     $gridRestoreCheckedMethod = $mainForm.GetType().GetMethod('GridReviewRestoreCheckedForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
     if ($null -eq $setReviewModeMethod -or $null -eq $gridBusyMethod -or $null -eq $gridVisibleCountMethod -or
         $null -eq $gridFilteredCountMethod -or $null -eq $gridTotalCountMethod -or $null -eq $gridCheckedCountMethod -or
+        $null -eq $gridSidebarOverflowMethod -or $null -eq $gridSidebarMinWidthMethod -or $null -eq $gridSidebarCurrentWidthMethod -or
         $null -eq $gridStatusCountMethod -or $null -eq $gridSetPageSizeMethod -or $null -eq $gridGoToPageMethod -or
         $null -eq $gridCheckVisibleMethod -or $null -eq $gridSetStatusFilterMethod -or $null -eq $gridExcludeCheckedMethod -or
         $null -eq $gridRestoreCheckedMethod) {
@@ -462,6 +466,12 @@ try {
     Invoke-PrivateMethod -Target $mainForm -MethodName 'ReloadImages' | Out-Null
     $setReviewModeMethod.Invoke($mainForm, @(1)) | Out-Null
     $gridSetPageSizeMethod.Invoke($mainForm, @(1000)) | Out-Null
+    $gridSidebarHasOverflow = [bool]$gridSidebarOverflowMethod.Invoke($mainForm, @())
+    if ($gridSidebarHasOverflow) {
+        $gridSidebarMinWidth = [int]$gridSidebarMinWidthMethod.Invoke($mainForm, @())
+        $gridSidebarCurrentWidth = [int]$gridSidebarCurrentWidthMethod.Invoke($mainForm, @())
+        throw "Grid sidebar layout is invalid: overflow=$gridSidebarHasOverflow current_width=$gridSidebarCurrentWidth min_width=$gridSidebarMinWidth"
+    }
 
     Wait-Until -TimeoutMs 30000 -Condition { [int]$gridVisibleCountMethod.Invoke($mainForm, @()) -eq 1000 }
     $gridPagingVisibleCount = [int]$gridVisibleCountMethod.Invoke($mainForm, @())

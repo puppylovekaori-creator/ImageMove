@@ -21,9 +21,14 @@ namespace ImageMove
         private const int MaximumThumbnailSize = 512;
         private const int MinimumPageSize = 1;
         private const int MaximumPageSize = 1000;
+        private const int MinimumSidebarWidth = 420;
+        private const int MinimumThumbnailPaneWidth = 240;
 
         private readonly Main ownerMain;
         private SplitContainer rootSplitContainer;
+        private TableLayoutPanel sidebarLayout;
+        private Panel settingsScrollPanel;
+        private Control settingsLayoutContent;
         private DoubleBufferedListView thumbnailListView;
         private ImageList thumbnailImageList;
         private Label emptyStateLabel;
@@ -97,12 +102,9 @@ namespace ImageMove
                 Dock = DockStyle.Fill,
                 FixedPanel = FixedPanel.Panel2
             };
+            rootSplitContainer.Panel1MinSize = MinimumThumbnailPaneWidth;
             rootSplitContainer.SplitterMoved += (_, __) => { };
-            rootSplitContainer.SizeChanged += (_, __) =>
-            {
-                rootSplitContainer.Panel2MinSize = rootSplitContainer.Width > 720 ? 360 : 120;
-                ApplySidebarWidth(pendingSidebarWidth);
-            };
+            rootSplitContainer.SizeChanged += (_, __) => UpdateSidebarConstraints();
 
             var thumbnailHostPanel = new Panel
             {
@@ -147,13 +149,13 @@ namespace ImageMove
 
             rootSplitContainer.Panel1.Controls.Add(thumbnailHostPanel);
 
-            var sidebarLayout = new TableLayoutPanel
+            sidebarLayout = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
                 RowCount = 9,
                 Padding = new Padding(12),
-                AutoScroll = true
+                AutoScroll = false
             };
             sidebarLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             sidebarLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -168,8 +170,11 @@ namespace ImageMove
             summaryLabel = new Label
             {
                 Dock = DockStyle.Fill,
-                AutoSize = true,
+                AutoSize = false,
+                AutoEllipsis = true,
                 Font = new Font("メイリオ", 10F, FontStyle.Bold),
+                Height = 28,
+                TextAlign = ContentAlignment.MiddleLeft,
                 Text = "表示待機中"
             };
             sidebarLayout.Controls.Add(summaryLabel, 0, 0);
@@ -177,7 +182,10 @@ namespace ImageMove
             selectionLabel = new Label
             {
                 Dock = DockStyle.Fill,
-                AutoSize = true,
+                AutoSize = false,
+                AutoEllipsis = true,
+                Height = 24,
+                TextAlign = ContentAlignment.MiddleLeft,
                 Text = "選択中 0枚 / 表示中 0枚 / 全体 0枚"
             };
             sidebarLayout.Controls.Add(selectionLabel, 0, 1);
@@ -185,7 +193,10 @@ namespace ImageMove
             pageLabel = new Label
             {
                 Dock = DockStyle.Fill,
-                AutoSize = true,
+                AutoSize = false,
+                AutoEllipsis = true,
+                Height = 24,
+                TextAlign = ContentAlignment.MiddleLeft,
                 Text = "ページ 0 / 0"
             };
             sidebarLayout.Controls.Add(pageLabel, 0, 2);
@@ -193,16 +204,21 @@ namespace ImageMove
             logPathLabel = new Label
             {
                 Dock = DockStyle.Fill,
-                AutoSize = true,
-                Text = "ログ: " + sessionLogger.LogPath,
-                AutoEllipsis = true
+                AutoSize = false,
+                AutoEllipsis = true,
+                Height = 24,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Text = "ログ: " + sessionLogger.LogPath
             };
             sidebarLayout.Controls.Add(logPathLabel, 0, 3);
 
             thumbnailStatusLabel = new Label
             {
                 Dock = DockStyle.Fill,
-                AutoSize = true,
+                AutoSize = false,
+                AutoEllipsis = true,
+                Height = 24,
+                TextAlign = ContentAlignment.MiddleLeft,
                 Text = "サムネイル待機中"
             };
             sidebarLayout.Controls.Add(thumbnailStatusLabel, 0, 4);
@@ -240,12 +256,13 @@ namespace ImageMove
             thumbnailActionPanel.Controls.Add(clearCacheButton);
             sidebarLayout.Controls.Add(thumbnailActionPanel, 0, 6);
 
-            var settingsScrollPanel = new Panel
+            settingsScrollPanel = new Panel
             {
                 Dock = DockStyle.Fill,
                 AutoScroll = true
             };
-            settingsScrollPanel.Controls.Add(CreateSettingsLayout());
+            settingsLayoutContent = CreateSettingsLayout();
+            settingsScrollPanel.Controls.Add(settingsLayoutContent);
             sidebarLayout.Controls.Add(settingsScrollPanel, 0, 7);
 
             historyGridView = CreateHistoryGrid();
@@ -255,6 +272,7 @@ namespace ImageMove
             Controls.Add(rootSplitContainer);
 
             ApplyDefaultControlValues();
+            UpdateSidebarConstraints();
             UpdateSelectionSummary();
             UpdateButtonsEnabled();
         }
@@ -272,6 +290,8 @@ namespace ImageMove
                 return;
             }
 
+            UpdateSidebarConstraints();
+            ResetSidebarScrollPositions();
             if (currentPageItems.Count > 0)
             {
                 BeginPageThumbnailGeneration();
@@ -431,7 +451,7 @@ namespace ImageMove
                 AspectRatioFilter = ParseAspectRatioFilter(aspectRatioFilterComboBox.SelectedItem as string),
                 ImageSizeFilter = ParseImageSizeFilter(imageSizeFilterComboBox.SelectedItem as string),
                 CurrentPage = Math.Max(1, (int)pageSelectorNumericUpDown.Value),
-                SidebarWidth = Math.Max(320, rootSplitContainer.Width - rootSplitContainer.SplitterDistance),
+                SidebarWidth = Math.Max(ResolveSidebarMinimumWidth(), rootSplitContainer.Width - rootSplitContainer.SplitterDistance),
                 HistoryColumnWidths = CaptureHistoryColumnWidths()
             };
         }
@@ -456,7 +476,9 @@ namespace ImageMove
             checkedFilterComboBox.SelectedItem = FormatCheckFilter(safeState.CheckFilter);
             statusFilterComboBox.SelectedItem = string.IsNullOrWhiteSpace(safeState.StatusFilter) ? StatusFilterAll : safeState.StatusFilter;
             ApplyExtensionSelection(safeState.ExtensionFilter);
+            UpdateSidebarConstraints();
             ApplySidebarWidth(safeState.SidebarWidth);
+            ResetSidebarScrollPositions();
             ApplyHistoryColumnWidths(safeState.HistoryColumnWidths);
             UpdateDisplayOptionsFromControls();
             ApplyFiltersAndRefreshPage(resetPage: false);
@@ -493,6 +515,23 @@ namespace ImageMove
         internal int StatusCountForTest(GridReviewItemStatus status)
         {
             return allItems.Count(item => item.Status == status);
+        }
+
+        internal bool HasSidebarHorizontalOverflowForTest()
+        {
+            return settingsScrollPanel != null
+                && !settingsScrollPanel.IsDisposed
+                && settingsScrollPanel.HorizontalScroll.Visible;
+        }
+
+        internal int SidebarMinimumWidthForTest()
+        {
+            return ResolveSidebarMinimumWidth();
+        }
+
+        internal int SidebarCurrentWidthForTest()
+        {
+            return rootSplitContainer?.Panel2?.Width ?? 0;
         }
 
         internal void SetPageSizeForTest(int pageSize)
@@ -874,7 +913,10 @@ namespace ImageMove
             return new Label
             {
                 Dock = DockStyle.Top,
-                AutoSize = true,
+                AutoSize = false,
+                AutoEllipsis = true,
+                Height = 40,
+                TextAlign = ContentAlignment.MiddleLeft,
                 Text = "下の履歴は直近の除外・戻し・アンドゥを表示します。WHO 列は操作主体の記録用です。"
             };
         }
@@ -1006,13 +1048,43 @@ namespace ImageMove
         private void ApplySidebarWidth(int sidebarWidth)
         {
             pendingSidebarWidth = sidebarWidth;
-            if (sidebarWidth <= 0 || rootSplitContainer.Width <= rootSplitContainer.Panel2MinSize + 240)
+            int minimumThumbnailPaneWidth = Math.Max(MinimumThumbnailPaneWidth, rootSplitContainer.Panel1MinSize);
+            if (sidebarWidth <= 0 || rootSplitContainer.Width <= rootSplitContainer.Panel2MinSize + minimumThumbnailPaneWidth)
             {
                 return;
             }
 
-            int safeSidebarWidth = Math.Max(rootSplitContainer.Panel2MinSize, Math.Min(sidebarWidth, rootSplitContainer.Width - 240));
-            rootSplitContainer.SplitterDistance = Math.Max(240, rootSplitContainer.Width - safeSidebarWidth);
+            int safeSidebarWidth = Math.Max(rootSplitContainer.Panel2MinSize, Math.Min(sidebarWidth, rootSplitContainer.Width - minimumThumbnailPaneWidth));
+            rootSplitContainer.SplitterDistance = Math.Max(minimumThumbnailPaneWidth, rootSplitContainer.Width - safeSidebarWidth);
+        }
+
+        private void UpdateSidebarConstraints()
+        {
+            if (rootSplitContainer == null || rootSplitContainer.IsDisposed)
+            {
+                return;
+            }
+
+            int desiredSidebarMinimumWidth = ResolveSidebarMinimumWidth();
+            int availableSidebarMinimumWidth = Math.Max(120, rootSplitContainer.Width - Math.Max(MinimumThumbnailPaneWidth, rootSplitContainer.Panel1MinSize) - rootSplitContainer.SplitterWidth);
+            rootSplitContainer.Panel2MinSize = Math.Max(120, Math.Min(desiredSidebarMinimumWidth, availableSidebarMinimumWidth));
+            ApplySidebarWidth(Math.Max(pendingSidebarWidth, rootSplitContainer.Panel2MinSize));
+            ResetSidebarScrollPositions();
+        }
+
+        private int ResolveSidebarMinimumWidth()
+        {
+            int preferredSettingsWidth = settingsLayoutContent?.GetPreferredSize(Size.Empty).Width ?? 0;
+            int scrollbarAllowance = SystemInformation.VerticalScrollBarWidth + 28;
+            return Math.Max(MinimumSidebarWidth, preferredSettingsWidth + scrollbarAllowance);
+        }
+
+        private void ResetSidebarScrollPositions()
+        {
+            if (settingsScrollPanel != null && !settingsScrollPanel.IsDisposed)
+            {
+                settingsScrollPanel.AutoScrollPosition = Point.Empty;
+            }
         }
 
         private void ApplyHistoryColumnWidths(string historyColumnWidths)

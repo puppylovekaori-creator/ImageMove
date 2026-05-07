@@ -558,6 +558,21 @@ namespace ImageMove
             return gridReviewWorkspaceControl?.CheckedCountForTest() ?? 0;
         }
 
+        internal bool GridReviewHasSidebarHorizontalOverflowForTest()
+        {
+            return gridReviewWorkspaceControl != null && gridReviewWorkspaceControl.HasSidebarHorizontalOverflowForTest();
+        }
+
+        internal int GridReviewSidebarMinimumWidthForTest()
+        {
+            return gridReviewWorkspaceControl?.SidebarMinimumWidthForTest() ?? 0;
+        }
+
+        internal int GridReviewSidebarCurrentWidthForTest()
+        {
+            return gridReviewWorkspaceControl?.SidebarCurrentWidthForTest() ?? 0;
+        }
+
         internal int GridReviewStatusCountForTest(int statusValue)
         {
             return gridReviewWorkspaceControl?.StatusCountForTest((GridReviewItemStatus)statusValue) ?? 0;
