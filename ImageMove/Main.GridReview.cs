@@ -12,6 +12,7 @@ namespace ImageMove
         private TableLayoutPanel reviewModePanel;
         private ComboBox reviewModeComboBox;
         private Label reviewModeNoteLabel;
+        private Panel reviewModeContentHost;
         private GridReviewWorkspaceControl gridReviewWorkspaceControl;
         private ReviewModeKind activeReviewMode = ReviewModeKind.SingleImage;
 
@@ -63,18 +64,29 @@ namespace ImageMove
                 };
                 reviewModePanel.Controls.Add(reviewModeNoteLabel, 2, 0);
 
-                gridReviewWorkspaceControl = new GridReviewWorkspaceControl(this)
+                reviewModeContentHost = new Panel
                 {
-                    Visible = false
+                    Dock = DockStyle.Fill,
+                    Padding = Padding.Empty,
+                    Margin = Padding.Empty
                 };
 
-                Controls.Add(gridReviewWorkspaceControl);
-                Controls.Add(reviewModePanel);
+                Controls.Remove(mainSplitContainer);
+                mainSplitContainer.Dock = DockStyle.Fill;
+                reviewModeContentHost.Controls.Add(mainSplitContainer);
 
-                mainSplitContainer.SendToBack();
-                gridReviewWorkspaceControl.BringToFront();
-                reviewModePanel.BringToFront();
-                menuStrip1.BringToFront();
+                gridReviewWorkspaceControl = new GridReviewWorkspaceControl(this)
+                {
+                    Dock = DockStyle.Fill,
+                    Visible = false
+                };
+                reviewModeContentHost.Controls.Add(gridReviewWorkspaceControl);
+
+                Controls.Add(reviewModeContentHost);
+                Controls.Add(reviewModePanel);
+                Controls.SetChildIndex(reviewModeContentHost, 0);
+                Controls.SetChildIndex(reviewModePanel, 1);
+                Controls.SetChildIndex(menuStrip1, 2);
 
                 reviewModeComboBox.SelectedIndex = 0;
                 ApplyReviewMode(ReviewModeKind.SingleImage);
@@ -103,11 +115,21 @@ namespace ImageMove
         {
             activeReviewMode = nextMode;
             bool useGridReview = activeReviewMode == ReviewModeKind.GridReview;
+
             mainSplitContainer.Visible = !useGridReview;
             if (gridReviewWorkspaceControl != null)
             {
                 gridReviewWorkspaceControl.Visible = useGridReview;
                 gridReviewWorkspaceControl.SetWorkspaceVisible(useGridReview);
+                if (useGridReview)
+                {
+                    gridReviewWorkspaceControl.BringToFront();
+                }
+                else
+                {
+                    mainSplitContainer.BringToFront();
+                }
+
                 if (useGridReview)
                 {
                     SyncGridReviewFromCurrentState(false);
@@ -536,6 +558,31 @@ namespace ImageMove
         internal bool IsGridReviewBusyForTest()
         {
             return gridReviewWorkspaceControl != null && gridReviewWorkspaceControl.IsBusyForTest();
+        }
+
+        internal bool IsReviewModeLayoutValidForTest()
+        {
+            if (reviewModePanel == null || reviewModeContentHost == null || gridReviewWorkspaceControl == null)
+            {
+                return false;
+            }
+
+            if (!ReferenceEquals(mainSplitContainer.Parent, reviewModeContentHost))
+            {
+                return false;
+            }
+
+            if (!ReferenceEquals(gridReviewWorkspaceControl.Parent, reviewModeContentHost))
+            {
+                return false;
+            }
+
+            if (!ReferenceEquals(reviewModePanel.Parent, this))
+            {
+                return false;
+            }
+
+            return reviewModeContentHost.Top >= reviewModePanel.Bottom;
         }
 
         internal int GridReviewVisibleItemCountForTest()

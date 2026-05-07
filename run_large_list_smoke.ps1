@@ -148,6 +148,7 @@ $gridOpsExcludeRoot = $null
 
 try {
     $sourceTextBox = Get-PrivateFieldValue -Target $mainForm -FieldName 'textBox1'
+    $reviewModeLayoutMethod = $mainForm.GetType().GetMethod('IsReviewModeLayoutValidForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
     $setReviewModeMethod = $mainForm.GetType().GetMethod('SetReviewModeForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
     $gridBusyMethod = $mainForm.GetType().GetMethod('IsGridReviewBusyForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
     $gridVisibleCountMethod = $mainForm.GetType().GetMethod('GridReviewVisibleItemCountForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
@@ -164,13 +165,17 @@ try {
     $gridSetStatusFilterMethod = $mainForm.GetType().GetMethod('GridReviewSetStatusFilterForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
     $gridExcludeCheckedMethod = $mainForm.GetType().GetMethod('GridReviewExcludeCheckedToFolderForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
     $gridRestoreCheckedMethod = $mainForm.GetType().GetMethod('GridReviewRestoreCheckedForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
-    if ($null -eq $setReviewModeMethod -or $null -eq $gridBusyMethod -or $null -eq $gridVisibleCountMethod -or
+    if ($null -eq $reviewModeLayoutMethod -or $null -eq $setReviewModeMethod -or $null -eq $gridBusyMethod -or $null -eq $gridVisibleCountMethod -or
         $null -eq $gridFilteredCountMethod -or $null -eq $gridTotalCountMethod -or $null -eq $gridCheckedCountMethod -or
         $null -eq $gridSidebarOverflowMethod -or $null -eq $gridSidebarMinWidthMethod -or $null -eq $gridSidebarCurrentWidthMethod -or
         $null -eq $gridStatusCountMethod -or $null -eq $gridSetPageSizeMethod -or $null -eq $gridGoToPageMethod -or
         $null -eq $gridCheckVisibleMethod -or $null -eq $gridSetStatusFilterMethod -or $null -eq $gridExcludeCheckedMethod -or
         $null -eq $gridRestoreCheckedMethod) {
         throw 'Grid review test helper methods were not found on Main.'
+    }
+
+    if (-not [bool]$reviewModeLayoutMethod.Invoke($mainForm, @())) {
+        throw 'Review mode layout is invalid for the existing single-image screen.'
     }
 
     Write-Host "TEST1: mixed scan with $TextFileCount text files"
@@ -410,7 +415,11 @@ try {
     $filterTerm = 'sample_001999'
     $filterStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $filterMethod.Invoke($browserForm, @($filterTerm)) | Out-Null
-    Wait-Until -TimeoutMs 30000 -Condition { -not [bool]$isFilterMethod.Invoke($browserForm, @()) }
+    Wait-Until -TimeoutMs 30000 -Condition {
+        $filterInProgress = [bool]$isFilterMethod.Invoke($browserForm, @())
+        $currentVisibleCount = [int]$rowCountMethod.Invoke($browserForm, @())
+        (-not $filterInProgress) -and $currentVisibleCount -eq 1
+    }
     $filterStopwatch.Stop()
 
     $filteredCount = [int]$rowCountMethod.Invoke($browserForm, @())
