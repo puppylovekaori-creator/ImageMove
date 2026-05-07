@@ -142,9 +142,32 @@ $historySettingDir = $null
 $historyReloadForm = $null
 $summaryRoot = $null
 $syntheticRoot = $null
+$gridPagingRoot = $null
+$gridOpsSourceRoot = $null
+$gridOpsExcludeRoot = $null
 
 try {
     $sourceTextBox = Get-PrivateFieldValue -Target $mainForm -FieldName 'textBox1'
+    $setReviewModeMethod = $mainForm.GetType().GetMethod('SetReviewModeForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    $gridBusyMethod = $mainForm.GetType().GetMethod('IsGridReviewBusyForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    $gridVisibleCountMethod = $mainForm.GetType().GetMethod('GridReviewVisibleItemCountForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    $gridFilteredCountMethod = $mainForm.GetType().GetMethod('GridReviewFilteredItemCountForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    $gridTotalCountMethod = $mainForm.GetType().GetMethod('GridReviewTotalItemCountForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    $gridCheckedCountMethod = $mainForm.GetType().GetMethod('GridReviewCheckedCountForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    $gridStatusCountMethod = $mainForm.GetType().GetMethod('GridReviewStatusCountForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    $gridSetPageSizeMethod = $mainForm.GetType().GetMethod('GridReviewSetPageSizeForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    $gridGoToPageMethod = $mainForm.GetType().GetMethod('GridReviewGoToPageForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    $gridCheckVisibleMethod = $mainForm.GetType().GetMethod('GridReviewCheckVisiblePageForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    $gridSetStatusFilterMethod = $mainForm.GetType().GetMethod('GridReviewSetStatusFilterForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    $gridExcludeCheckedMethod = $mainForm.GetType().GetMethod('GridReviewExcludeCheckedToFolderForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    $gridRestoreCheckedMethod = $mainForm.GetType().GetMethod('GridReviewRestoreCheckedForTest', [System.Reflection.BindingFlags]'Instance, NonPublic, Public')
+    if ($null -eq $setReviewModeMethod -or $null -eq $gridBusyMethod -or $null -eq $gridVisibleCountMethod -or
+        $null -eq $gridFilteredCountMethod -or $null -eq $gridTotalCountMethod -or $null -eq $gridCheckedCountMethod -or
+        $null -eq $gridStatusCountMethod -or $null -eq $gridSetPageSizeMethod -or $null -eq $gridGoToPageMethod -or
+        $null -eq $gridCheckVisibleMethod -or $null -eq $gridSetStatusFilterMethod -or $null -eq $gridExcludeCheckedMethod -or
+        $null -eq $gridRestoreCheckedMethod) {
+        throw 'Grid review test helper methods were not found on Main.'
+    }
 
     Write-Host "TEST1: mixed scan with $TextFileCount text files"
     $mixedRoot = New-TempDirectory -Prefix 'ImageMoveMixedScan'
@@ -423,6 +446,95 @@ try {
     }
 
     Write-Host 'RESULT2C: close_during_filter_ok'
+
+    Write-Host 'TEST3: grid review paging with 1100 actual images'
+    $gridPagingRoot = New-TempDirectory -Prefix 'ImageMoveGridPaging'
+    for ($index = 0; $index -lt 1100; $index++) {
+        $bucket = Join-Path $gridPagingRoot ('group_' + ($index % 20).ToString('00'))
+        if (-not (Test-Path $bucket)) {
+            [System.IO.Directory]::CreateDirectory($bucket) | Out-Null
+        }
+
+        New-JpegFile -Path (Join-Path $bucket ('grid_' + $index.ToString('0000') + '.jpg')) -Text ($index % 100)
+    }
+
+    $sourceTextBox.Text = $gridPagingRoot
+    Invoke-PrivateMethod -Target $mainForm -MethodName 'ReloadImages' | Out-Null
+    $setReviewModeMethod.Invoke($mainForm, @(1)) | Out-Null
+    $gridSetPageSizeMethod.Invoke($mainForm, @(1000)) | Out-Null
+
+    Wait-Until -TimeoutMs 30000 -Condition { [int]$gridVisibleCountMethod.Invoke($mainForm, @()) -eq 1000 }
+    $gridPagingVisibleCount = [int]$gridVisibleCountMethod.Invoke($mainForm, @())
+    $gridPagingFilteredCount = [int]$gridFilteredCountMethod.Invoke($mainForm, @())
+    $gridPagingTotalCount = [int]$gridTotalCountMethod.Invoke($mainForm, @())
+    if ($gridPagingVisibleCount -ne 1000 -or $gridPagingFilteredCount -ne 1100 -or $gridPagingTotalCount -ne 1100) {
+        throw "Grid paging counts are invalid: visible=$gridPagingVisibleCount filtered=$gridPagingFilteredCount total=$gridPagingTotalCount"
+    }
+
+    $gridCheckVisibleMethod.Invoke($mainForm, @()) | Out-Null
+    $gridCheckedAfterPage1 = [int]$gridCheckedCountMethod.Invoke($mainForm, @())
+    if ($gridCheckedAfterPage1 -ne 1000) {
+        throw "Expected 1000 checked images on page 1, actual=$gridCheckedAfterPage1"
+    }
+
+    $gridGoToPageMethod.Invoke($mainForm, @(2)) | Out-Null
+    Wait-Until -TimeoutMs 30000 -Condition { [int]$gridVisibleCountMethod.Invoke($mainForm, @()) -eq 100 }
+    $gridPage2VisibleCount = [int]$gridVisibleCountMethod.Invoke($mainForm, @())
+    $gridCheckedAfterPageMove = [int]$gridCheckedCountMethod.Invoke($mainForm, @())
+    if ($gridPage2VisibleCount -ne 100 -or $gridCheckedAfterPageMove -ne 1000) {
+        throw "Grid paging state was not preserved: page2_visible=$gridPage2VisibleCount checked=$gridCheckedAfterPageMove"
+    }
+
+    Write-Host ("RESULT3: visible={0} filtered={1} total={2} checked_after_page_move={3}" -f $gridPagingVisibleCount, $gridPagingFilteredCount, $gridPagingTotalCount, $gridCheckedAfterPageMove)
+
+    Write-Host 'TEST4: grid review exclude / restore / undo'
+    $gridOpsSourceRoot = New-TempDirectory -Prefix 'ImageMoveGridOpsSource'
+    $gridOpsExcludeRoot = New-TempDirectory -Prefix 'ImageMoveGridOpsExclude'
+    for ($index = 0; $index -lt 12; $index++) {
+        New-JpegFile -Path (Join-Path $gridOpsSourceRoot ('ops_' + $index.ToString('000') + '.jpg')) -Text $index
+    }
+
+    $sourceTextBox.Text = $gridOpsSourceRoot
+    Invoke-PrivateMethod -Target $mainForm -MethodName 'ReloadImages' | Out-Null
+    $setReviewModeMethod.Invoke($mainForm, @(1)) | Out-Null
+    $gridSetPageSizeMethod.Invoke($mainForm, @(10)) | Out-Null
+    $gridSetStatusFilterMethod.Invoke($mainForm, @(-1)) | Out-Null
+
+    Wait-Until -TimeoutMs 30000 -Condition { [int]$gridVisibleCountMethod.Invoke($mainForm, @()) -eq 10 }
+    $gridCheckVisibleMethod.Invoke($mainForm, @()) | Out-Null
+    $gridExcludeCheckedMethod.Invoke($mainForm, @([string]$gridOpsExcludeRoot)) | Out-Null
+
+    $postExcludeImagePaths = Get-PrivateFieldValue -Target $mainForm -FieldName 'imagePaths'
+    $excludedStatusCount = [int]$gridStatusCountMethod.Invoke($mainForm, @(1))
+    if ($postExcludeImagePaths.Count -ne 2 -or $excludedStatusCount -ne 10) {
+        throw "Exclude result is invalid: queue=$($postExcludeImagePaths.Count) excluded=$excludedStatusCount"
+    }
+
+    $gridSetStatusFilterMethod.Invoke($mainForm, @(1)) | Out-Null
+    Wait-Until -TimeoutMs 30000 -Condition { [int]$gridVisibleCountMethod.Invoke($mainForm, @()) -eq 10 }
+    $gridCheckVisibleMethod.Invoke($mainForm, @()) | Out-Null
+    $gridRestoreCheckedMethod.Invoke($mainForm, @()) | Out-Null
+
+    $postRestoreImagePaths = Get-PrivateFieldValue -Target $mainForm -FieldName 'imagePaths'
+    $restoredStatusCount = [int]$gridStatusCountMethod.Invoke($mainForm, @(2))
+    if ($postRestoreImagePaths.Count -ne 12 -or $restoredStatusCount -lt 10) {
+        throw "Restore result is invalid: queue=$($postRestoreImagePaths.Count) restored=$restoredStatusCount"
+    }
+
+    Invoke-PrivateMethod -Target $mainForm -MethodName 'UndoLastMoveAction' | Out-Null
+    $postUndoRestoreImagePaths = Get-PrivateFieldValue -Target $mainForm -FieldName 'imagePaths'
+    $excludedAfterUndoRestore = [int]$gridStatusCountMethod.Invoke($mainForm, @(1))
+    if ($postUndoRestoreImagePaths.Count -ne 2 -or $excludedAfterUndoRestore -ne 10) {
+        throw "Undo restore result is invalid: queue=$($postUndoRestoreImagePaths.Count) excluded=$excludedAfterUndoRestore"
+    }
+
+    Invoke-PrivateMethod -Target $mainForm -MethodName 'UndoLastMoveAction' | Out-Null
+    $postUndoExcludeImagePaths = Get-PrivateFieldValue -Target $mainForm -FieldName 'imagePaths'
+    if ($postUndoExcludeImagePaths.Count -ne 12) {
+        throw "Undo exclude result is invalid: queue=$($postUndoExcludeImagePaths.Count)"
+    }
+
+    Write-Host ("RESULT4: exclude_queue={0} restore_queue={1} undo_restore_queue={2} final_queue={3}" -f $postExcludeImagePaths.Count, $postRestoreImagePaths.Count, $postUndoRestoreImagePaths.Count, $postUndoExcludeImagePaths.Count)
     Write-Host 'IMAGE_MOVE_LARGE_LIST_SMOKE_OK'
 }
 finally {
@@ -442,7 +554,7 @@ finally {
         $mainForm.Dispose()
     }
 
-    foreach ($path in @($mixedRoot, $prefetchRoot, $historyRoot, $historySettingDir, $summaryRoot, $syntheticRoot)) {
+    foreach ($path in @($mixedRoot, $prefetchRoot, $historyRoot, $historySettingDir, $summaryRoot, $syntheticRoot, $gridPagingRoot, $gridOpsSourceRoot, $gridOpsExcludeRoot)) {
         if (-not [string]::IsNullOrWhiteSpace($path) -and (Test-Path $path)) {
             Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
         }

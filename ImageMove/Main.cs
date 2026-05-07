@@ -401,12 +401,18 @@ namespace ImageMove
         /// </summary>
         private void Main_FormClosing(object sender, FormClosingEventArgs e)
         {
+            if (!ConfirmGridReviewCloseIfNeeded(e))
+            {
+                return;
+            }
+
             StopRepeatAction();
             prefetchDelayTimer.Stop();
             browserRefreshTimer.Stop();
             settingsSaveTimer.Stop();
             CancelImagePrefetch();
             ClearImageCache();
+            DisposeGridReviewWorkspace();
             FlushPendingSettingsSave();
             SaveSettingSafe();
         }
@@ -452,6 +458,7 @@ namespace ImageMove
             ClearDisplayedImage("画像がありません。");
             UpdateDestinationActionButtons();
             UpdateUndoState();
+            InitializeGridReviewModeUi();
         }
 
         /// <summary>
@@ -989,6 +996,7 @@ namespace ImageMove
                 ReplaceImagePaths(CollectImagePaths(sourceDirectory));
                 currentImageIndex = ResolveReloadIndex(previousImagePath, previousIndex);
                 RememberSourceDirectory(sourceDirectory);
+                SyncGridReviewFromCurrentState(forceReset: true);
 
                 if (!HasCurrentImage())
                 {
@@ -1336,7 +1344,8 @@ namespace ImageMove
                 var result = MoveImagesToDirectory(
                     new[] { imagePaths[currentImageIndex] },
                     destinationDirectory,
-                    GetDestinationLabel(destinationTextBox));
+                    GetDestinationLabel(destinationTextBox),
+                    MoveOperationOrigin.SingleReview);
 
                 if (result.MovedCount == 0 && result.SkippedMessages.Count > 0)
                 {
@@ -1486,15 +1495,15 @@ namespace ImageMove
                     }
 
                     File.Move(item.DestinationPath, item.SourcePath);
-                    RestoreMovedImagePath(item);
                 }
 
-                RebuildImagePathCache();
+                ApplyQueueChangesForCompletedAction(action, true);
                 moveHistoryActions.Pop();
-                FocusRestoredImage(action);
+                ApplyFocusAfterUndo(action);
                 UpdateUndoState();
                 RequestSettingsSave();
                 RefreshImageBrowserItemsIfOpen();
+                NotifyGridReviewUndoCompleted(action);
             }
             catch (Exception ex)
             {
@@ -1571,6 +1580,30 @@ namespace ImageMove
 
             NormalizeCurrentIndex();
 
+            if (HasCurrentImage())
+            {
+                DisplayCurrentImage();
+            }
+            else
+            {
+                ClearDisplayedImage("画像がありません。");
+            }
+        }
+
+        private void ApplyFocusAfterUndo(MoveHistoryAction action)
+        {
+            if (action == null)
+            {
+                return;
+            }
+
+            if (action.OperationKind == MoveOperationKind.ExcludeToDestination)
+            {
+                FocusRestoredImage(action);
+                return;
+            }
+
+            NormalizeCurrentIndex();
             if (HasCurrentImage())
             {
                 DisplayCurrentImage();
@@ -1714,7 +1747,7 @@ namespace ImageMove
             string selectionLabel,
             Action<BatchMoveProgressInfo> progressCallback = null)
         {
-            return MoveImagesToDirectory(sourcePaths, destinationDirectory, selectionLabel, progressCallback);
+            return MoveImagesToDirectory(sourcePaths, destinationDirectory, selectionLabel, MoveOperationOrigin.ImageListBrowser, progressCallback);
         }
         #endregion 一覧別窓
 
@@ -1781,10 +1814,11 @@ namespace ImageMove
                   WindowHeight = windowBounds.Height,
                   WindowState = WindowState.ToString(),
                   MainSplitterDistance = mainSplitContainer.SplitterDistance,
-                  RecentFolderHistoryLimit = ClampRecentFolderHistoryLimit(recentFolderHistoryLimit),
-                  RecentSourceFolders = recentSourceFolders.ToList(),
-                  RecentDestinationFolders = recentDestinationFolders.ToList()
+              RecentFolderHistoryLimit = ClampRecentFolderHistoryLimit(recentFolderHistoryLimit),
+              RecentSourceFolders = recentSourceFolders.ToList(),
+              RecentDestinationFolders = recentDestinationFolders.ToList()
               };
+            PopulateGridReviewSetting(setting);
 
             using (var streamWriter = new StreamWriter(settingFileName, false, new UTF8Encoding(false)))
             {
@@ -1816,6 +1850,7 @@ namespace ImageMove
                   ApplySavedWindowBounds(setting);
                   pendingMainSplitterDistance = setting.MainSplitterDistance;
                   ApplySavedMainSplitterDistance();
+                  ApplySavedGridReviewState(setting);
               }
           }
 
@@ -2038,6 +2073,7 @@ namespace ImageMove
             IEnumerable<string> sourcePaths,
             string destinationDirectory,
             string actionLabel,
+            MoveOperationOrigin origin,
             Action<BatchMoveProgressInfo> progressCallback = null)
         {
             var result = new BatchMoveExecutionResult();
@@ -2068,7 +2104,14 @@ namespace ImageMove
                 string sourceDirectory = Path.GetDirectoryName(sourcePath) ?? string.Empty;
                 if (!File.Exists(sourcePath))
                 {
-                    result.SkippedMessages.Add($"ファイルが見つからないため移動できません: {Path.GetFileName(sourcePath)}");
+                    string errorMessage = $"ファイルが見つからないため移動できません: {Path.GetFileName(sourcePath)}";
+                    result.SkippedMessages.Add(errorMessage);
+                    result.FailureDetails.Add(new FileOperationFailureDetail
+                    {
+                        SourcePath = sourcePath,
+                        DestinationPath = normalizedDestinationDirectory,
+                        ErrorMessage = errorMessage
+                    });
                     processedCount++;
                     skippedCount++;
                     progressCallback?.Invoke(new BatchMoveProgressInfo(totalCount, processedCount, movedItems.Count, skippedCount, "ファイルが見つからないためスキップしました。", currentFileName));
@@ -2077,7 +2120,14 @@ namespace ImageMove
 
                 if (string.Equals(sourceDirectory, normalizedDestinationDirectory, StringComparison.OrdinalIgnoreCase))
                 {
-                    result.SkippedMessages.Add($"同じフォルダには移動できません: {Path.GetFileName(sourcePath)}");
+                    string errorMessage = $"同じフォルダには移動できません: {Path.GetFileName(sourcePath)}";
+                    result.SkippedMessages.Add(errorMessage);
+                    result.FailureDetails.Add(new FileOperationFailureDetail
+                    {
+                        SourcePath = sourcePath,
+                        DestinationPath = normalizedDestinationDirectory,
+                        ErrorMessage = errorMessage
+                    });
                     processedCount++;
                     skippedCount++;
                     progressCallback?.Invoke(new BatchMoveProgressInfo(totalCount, processedCount, movedItems.Count, skippedCount, "同じフォルダへの移動をスキップしました。", currentFileName));
@@ -2087,7 +2137,14 @@ namespace ImageMove
                 string destinationPath = Path.Combine(normalizedDestinationDirectory, Path.GetFileName(sourcePath));
                 if (File.Exists(destinationPath))
                 {
-                    result.SkippedMessages.Add($"移動先に同名ファイルがあります: {Path.GetFileName(sourcePath)}");
+                    string errorMessage = $"移動先に同名ファイルがあります: {Path.GetFileName(sourcePath)}";
+                    result.SkippedMessages.Add(errorMessage);
+                    result.FailureDetails.Add(new FileOperationFailureDetail
+                    {
+                        SourcePath = sourcePath,
+                        DestinationPath = destinationPath,
+                        ErrorMessage = errorMessage
+                    });
                     processedCount++;
                     skippedCount++;
                     progressCallback?.Invoke(new BatchMoveProgressInfo(totalCount, processedCount, movedItems.Count, skippedCount, "移動先に同名ファイルがあるためスキップしました。", currentFileName));
@@ -2103,6 +2160,7 @@ namespace ImageMove
 
                     movedItems.Add(new MoveHistoryItem
                     {
+                        StableSourcePath = sourcePath,
                         SourcePath = sourcePath,
                         DestinationPath = destinationPath,
                         OriginalIndex = originalIndex >= 0 ? originalIndex : imagePaths.Count
@@ -2116,7 +2174,14 @@ namespace ImageMove
                 catch (Exception ex)
                 {
                     logger.Error($"画像移動に失敗しました。 Source={sourcePath} Destination={destinationPath}", ex);
-                    result.SkippedMessages.Add($"移動に失敗しました: {Path.GetFileName(sourcePath)}");
+                    string errorMessage = $"移動に失敗しました: {Path.GetFileName(sourcePath)}";
+                    result.SkippedMessages.Add(errorMessage);
+                    result.FailureDetails.Add(new FileOperationFailureDetail
+                    {
+                        SourcePath = sourcePath,
+                        DestinationPath = destinationPath,
+                        ErrorMessage = errorMessage
+                    });
                     processedCount++;
                     skippedCount++;
                     progressCallback?.Invoke(new BatchMoveProgressInfo(totalCount, processedCount, movedItems.Count, skippedCount, "移動に失敗しました。", currentFileName));
@@ -2125,8 +2190,10 @@ namespace ImageMove
 
             if (movedItems.Count > 0)
             {
-                RemoveImagePathsFromQueue(movedSourcePaths);
-                moveHistoryActions.Push(new MoveHistoryAction(actionLabel, movedItems));
+                var historyAction = new MoveHistoryAction(actionLabel, movedItems, MoveOperationKind.ExcludeToDestination, origin);
+                ApplyQueueChangesForCompletedAction(historyAction, false);
+                moveHistoryActions.Push(historyAction);
+                result.HistoryAction = historyAction;
 
                 if (HasCurrentImage())
                 {
@@ -2147,6 +2214,7 @@ namespace ImageMove
                 }
 
                 RequestSettingsSave();
+                NotifyGridReviewActionCommitted(historyAction);
             }
             else
             {
@@ -2855,19 +2923,40 @@ namespace ImageMove
 
     internal sealed class MoveHistoryAction
     {
-        public MoveHistoryAction(string actionLabel, IEnumerable<MoveHistoryItem> items)
+        public MoveHistoryAction(
+            string actionLabel,
+            IEnumerable<MoveHistoryItem> items,
+            MoveOperationKind operationKind,
+            MoveOperationOrigin origin)
         {
-            ActionLabel = actionLabel;
+            OperationId = Guid.NewGuid().ToString("N");
+            ExecutedAtUtc = DateTime.UtcNow;
+            Who = "ImageMove";
+            ActionLabel = actionLabel ?? string.Empty;
+            OperationKind = operationKind;
+            Origin = origin;
             Items = items.ToList();
         }
 
+        public string OperationId { get; }
+
+        public DateTime ExecutedAtUtc { get; }
+
+        public string Who { get; }
+
         public string ActionLabel { get; }
+
+        public MoveOperationKind OperationKind { get; }
+
+        public MoveOperationOrigin Origin { get; }
 
         public List<MoveHistoryItem> Items { get; }
     }
 
     internal sealed class MoveHistoryItem
     {
+        public string StableSourcePath { get; set; }
+
         public string SourcePath { get; set; }
 
         public string DestinationPath { get; set; }
@@ -2884,6 +2973,10 @@ namespace ImageMove
         public List<string> MovedSourcePaths { get; } = new List<string>();
 
         public List<string> SkippedMessages { get; } = new List<string>();
+
+        public List<FileOperationFailureDetail> FailureDetails { get; } = new List<FileOperationFailureDetail>();
+
+        public MoveHistoryAction HistoryAction { get; set; }
     }
 
     internal sealed class BatchMoveProgressInfo

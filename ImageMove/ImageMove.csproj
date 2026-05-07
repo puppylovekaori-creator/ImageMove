@@ -51,9 +51,15 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="FolderPickerDialog.cs" />
+    <Compile Include="GridReviewModels.cs" />
+    <Compile Include="GridReviewSessionLogger.cs" />
+    <Compile Include="GridReviewWorkspaceControl.cs" />
     <Compile Include="ImageListBrowserForm.cs" />
     <Compile Include="Main.cs">
       <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Main.GridReview.cs">
+      <DependentUpon>Main.cs</DependentUpon>
     </Compile>
     <Compile Include="Main.Designer.cs">
       <DependentUpon>Main.cs</DependentUpon>
@@ -61,6 +67,7 @@
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Setting.cs" />
+    <Compile Include="ThumbnailCacheManager.cs" />
     <Compile Include="TopMostMessageBox.cs" />
     <EmbeddedResource Include="Main.resx">
       <DependentUpon>Main.cs</DependentUpon>
